@@ -1,5 +1,4 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
 
 let ffmpeg;
 let mediaObjectUrl;
@@ -13,6 +12,13 @@ const video = () => document.getElementById("media-player");
 const status = () => document.getElementById("player-status");
 const mountsKey = "medius.mounts.v1";
 const ffmpegAssetVersion = "3";
+
+// Playback starts after this much media is ready; later pieces are longer for efficiency.
+const FIRST_SEGMENT_SECONDS = 5;
+const SEGMENT_SECONDS = 10;
+// How far conversion may run ahead of playback, and how much played media is kept behind it.
+const MAX_BUFFER_AHEAD_SECONDS = 90;
+const KEEP_BEHIND_SECONDS = 30;
 
 export function loadMounts() {
     return localStorage.getItem(mountsKey);
@@ -113,6 +119,7 @@ export async function acquireToken(tenantId, clientId, scopes) {
     return result.access_token;
 }
 
+// Whole-file conversion, used for containers that only need a remux.
 async function convertForBrowser(uri, fileName, mode) {
     await ensureFfmpegLoaded();
 
@@ -121,33 +128,26 @@ async function convertForBrowser(uri, fileName, mode) {
     const outputName = "output.mp4";
     ffmpegLog.length = 0;
     await cleanupFfmpegFiles(inputName, outputName);
-    await ffmpeg.writeFile(inputName, await fetchFile(uri));
+    await ffmpeg.writeFile(inputName, new Uint8Array(await (await fetch(uri)).arrayBuffer()));
 
     const extractedSubtitle = await extractEmbeddedSubtitle(inputName);
     let exitCode = -1;
     if (conversionStrategy(mode) === "remux") {
         exitCode = await ffmpeg.exec([
-            "-y",
-            "-i", inputName,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c", "copy",
-            "-movflags", "+faststart",
+            "-y", "-i", inputName,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c", "copy", "-movflags", "+faststart",
             outputName
-        ]);
+        ], 180000);
     }
     if (exitCode !== 0) {
         exitCode = await ffmpeg.exec([
-            "-y",
-            "-i", inputName,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-c:a", "aac",
-            "-movflags", "+faststart",
+            "-y", "-i", inputName,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "veryfast",
+            "-c:a", "aac", "-movflags", "+faststart",
             outputName
-        ]);
+        ], 600000);
     }
     if (exitCode !== 0) throw conversionError();
 
@@ -159,190 +159,393 @@ async function convertForBrowser(uri, fileName, mode) {
 
 async function ensureFfmpegLoaded() {
     ffmpeg ??= new FFmpeg();
-    if (!ffmpeg.loaded) {
-        ffmpeg.on("log", ({ message }) => {
-            ffmpegLog.push(message);
-            if (ffmpegLog.length > 40) ffmpegLog.shift();
-            ffmpegLogSink?.push(message);
-        });
-        ffmpeg.on("progress", ({ progress }) => {
-            if (!segmentedActive && Number.isFinite(progress)) {
-                status().textContent = `Converting locally… ${Math.max(0, Math.min(100, Math.round(progress * 100)))}%`;
-            }
-        });
-        const assetUrl = path => {
-            const url = new URL(path, import.meta.url);
-            url.searchParams.set("v", ffmpegAssetVersion);
-            return url.href;
-        };
-        let timeoutId;
-        try {
-            await Promise.race([
-                ffmpeg.load({
-                    classWorkerURL: assetUrl("./ffmpeg/worker.js"),
-                    coreURL: assetUrl("./ffmpeg/ffmpeg-core.js"),
-                    wasmURL: assetUrl("./ffmpeg/ffmpeg-core.wasm")
-                }),
-                new Promise((_, reject) => {
-                    timeoutId = setTimeout(
-                        () => reject(new Error("ffmpeg.wasm did not load within 30 seconds. Refresh the page to clear stale cached assets.")),
-                        30000);
-                })
-            ]);
-        } catch (error) {
-            ffmpeg.terminate();
-            ffmpeg = undefined;
-            throw error;
-        } finally {
-            clearTimeout(timeoutId);
+    if (ffmpeg.loaded) {
+        return;
+    }
+
+    ffmpeg.on("log", ({ message }) => {
+        ffmpegLog.push(message);
+        if (ffmpegLog.length > 40) ffmpegLog.shift();
+        ffmpegLogSink?.push(message);
+    });
+    ffmpeg.on("progress", ({ progress }) => {
+        if (!segmentedActive && Number.isFinite(progress)) {
+            status().textContent = `Converting locally… ${Math.max(0, Math.min(100, Math.round(progress * 100)))}%`;
         }
+    });
+
+    const assetUrl = path => {
+        const url = new URL(path, import.meta.url);
+        url.searchParams.set("v", ffmpegAssetVersion);
+        return url.href;
+    };
+
+    let timeoutId;
+    try {
+        await Promise.race([
+            ffmpeg.load({
+                classWorkerURL: assetUrl("./ffmpeg/worker.js"),
+                coreURL: assetUrl("./ffmpeg/ffmpeg-core.js"),
+                wasmURL: assetUrl("./ffmpeg/ffmpeg-core.wasm")
+            }),
+            new Promise((_, reject) => {
+                timeoutId = setTimeout(
+                    () => reject(new Error("ffmpeg.wasm did not load within 30 seconds. Refresh the page to clear stale cached assets.")),
+                    30000);
+            })
+        ]);
+    } catch (error) {
+        ffmpeg.terminate();
+        ffmpeg = undefined;
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
+// Converts the source piece by piece. Playback begins after the first piece and the
+// remaining pieces are produced ahead of the playhead, including after a seek.
 async function playTranscodedSegments(uri, fileName, subtitleWebVtt, embeddedSubtitleOffsetMilliseconds) {
     const generation = ++playbackGeneration;
-    const isCurrent = () => generation === playbackGeneration;
     segmentedActive = true;
     await ensureFfmpegLoaded();
 
     const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ".bin";
     ffmpegLog.length = 0;
-
     status().textContent = "Loading media…";
-    const input = await mountInput(uri, extension);
-    if (!isCurrent()) return;
 
-    // Stream details come from the first segment's own log, so no extra probe pass is needed.
-    let probe = { durationSeconds: Number.NaN, width: 0, hasSubtitles: false };
+    const session = {
+        generation,
+        isCurrent: () => generation === playbackGeneration,
+        fileName,
+        subtitleWebVtt,
+        embeddedSubtitleOffsetMilliseconds,
+        probe: { durationSeconds: Number.NaN, hasSubtitles: false },
+        maxWidth: 854,
+        needsInitSegment: true,
+        seekTarget: null,
+        mediaSource: null,
+        sourceBuffer: null,
+        player: null
+    };
 
-    // The first piece is short so playback starts quickly; later pieces are longer for efficiency.
-    const firstSegmentSeconds = 5;
-    const segmentSeconds = 15;
-    let maxWidth = 854;
+    session.input = await mountInput(uri, extension, generation);
+    if (!session.isCurrent()) {
+        await releaseInput(session.input);
+        return;
+    }
+
+    // Hand control back as soon as playback starts; conversion continues in the background.
+    let signalStarted;
+    const started = new Promise(resolve => { signalStarted = resolve; });
+    const loop = runSegmentLoop(session, signalStarted);
+    loop.catch(error => {
+        if (session.isCurrent()) {
+            status().textContent = error.message;
+        }
+    });
+
+    await Promise.race([started, loop]);
+}
+
+async function runSegmentLoop(session, onStarted) {
     let position = 0;
-    let segmentIndex = 0;
-    let mediaSource;
-    let sourceBuffer;
-    let player;
-    let needsInitSegment = true;
+    let playing = false;
+    // A short piece is converted first, and again after each seek, so playback resumes quickly.
+    let useShortSegment = true;
 
     try {
-        while (!Number.isFinite(probe.durationSeconds) || position < probe.durationSeconds - 0.2) {
-            if (!isCurrent()) return;
-
-            const duration = segmentIndex === 0 ? firstSegmentSeconds : segmentSeconds;
-            const outputName = `segment-${segmentIndex % 2}.mp4`;
-            await Promise.allSettled([ffmpeg.deleteFile(outputName)]);
-            reportSegmentStatus(fileName, sourceBuffer, player, position);
-
-            const lines = [];
-            ffmpegLogSink = segmentIndex === 0 ? lines : undefined;
-            const startedAt = performance.now();
-            let exitCode;
-            try {
-                exitCode = await ffmpeg.exec(
-                    buildSegmentArgs(input.path, outputName, position, duration, probe, maxWidth),
-                    180000);
-            } finally {
-                ffmpegLogSink = undefined;
-            }
-            const elapsedSeconds = (performance.now() - startedAt) / 1000;
-            if (!isCurrent()) return;
-            if (exitCode !== 0) {
-                if (!sourceBuffer) throw conversionError();
-                break;
+        while (session.isCurrent()) {
+            if (session.seekTarget !== null) {
+                // Convert from the exact seek point so playback can resume immediately.
+                position = Math.max(0, session.seekTarget);
+                session.seekTarget = null;
+                session.needsInitSegment = true;
+                useShortSegment = true;
             }
 
-            const file = await ffmpeg.readFile(outputName);
-            await Promise.allSettled([ffmpeg.deleteFile(outputName)]);
-            const fragmentOffset = findMediaFragmentOffset(file);
-            if (fragmentOffset < 0) {
-                if (!sourceBuffer) throw conversionError();
-                break;
+            // Never reconvert media that is already in the buffer.
+            const bufferedEnd = bufferedEndCovering(session.sourceBuffer, position);
+            if (bufferedEnd !== null) {
+                position = bufferedEnd;
             }
 
-            if (segmentIndex === 0) {
-                probe = parseProbe(lines.join("\n"));
-
-                // The buffer is created from the real output so its codec string always matches.
-                mediaSource = new MediaSource();
-                mediaObjectUrl = URL.createObjectURL(mediaSource);
-                player = video();
-                player.pause();
-                player.replaceChildren();
-                player.src = mediaObjectUrl;
-                if (subtitleWebVtt) {
-                    addSubtitleTrack(player, subtitleWebVtt);
-                }
-                await once(mediaSource, "sourceopen");
-                if (!isCurrent()) return;
-
-                const mimeType = describeSegment(file);
-                if (!MediaSource.isTypeSupported(mimeType)) {
-                    throw new Error(`This browser cannot play ${mimeType}.`);
-                }
-
-                sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-                sourceBuffer.mode = "sequence";
-                if (Number.isFinite(probe.durationSeconds)) {
-                    try {
-                        mediaSource.duration = probe.durationSeconds;
-                    } catch {
-                        // A browser may refuse an explicit duration; the scrubber grows as segments append.
-                    }
-                }
+            if (isFullyConverted(session, position)) {
+                await finishStream(session);
+                reportStatus(session, position, playing);
+                if (!await waitForSeek(session)) return;
+                continue;
             }
 
-            await appendBuffer(sourceBuffer, needsInitSegment ? file : file.slice(fragmentOffset));
-            needsInitSegment = false;
+            if (playing && !await waitForBufferRoom(session, position)) return;
+            if (session.seekTarget !== null) continue;
+
+            const duration = useShortSegment ? FIRST_SEGMENT_SECONDS : SEGMENT_SECONDS;
+            const segment = await convertSegment(session, position, duration);
+            if (!session.isCurrent()) return;
+
+            if (!segment) {
+                if (!playing) throw conversionError();
+                // Nothing decodable here, so treat this point as the end of the media.
+                session.probe.durationSeconds = Math.min(
+                    Number.isFinite(session.probe.durationSeconds) ? session.probe.durationSeconds : Infinity,
+                    position);
+                continue;
+            }
+
+            await appendSegment(session, segment, position);
             position += duration;
-            segmentIndex++;
+            useShortSegment = false;
 
-            if (segmentIndex === 1) {
-                try {
-                    await player.play();
-                } catch (error) {
-                    if (error?.name !== "NotAllowedError") throw error;
-                }
-
-                if (!subtitleWebVtt && probe.hasSubtitles) {
-                    const embedded = await extractEmbeddedSubtitle(input.path);
-                    if (!isCurrent()) return;
-                    if (embedded) {
-                        addSubtitleTrack(player, shiftWebVtt(embedded, embeddedSubtitleOffsetMilliseconds));
-                    }
-                }
+            if (!playing) {
+                playing = true;
+                await beginPlayback(session);
+                onStarted();
             }
 
-            // Drop resolution when conversion cannot outpace playback, so the buffer stops shrinking.
-            if (maxWidth > 480 && elapsedSeconds > duration * 0.85) {
-                maxWidth = maxWidth > 640 ? 640 : 480;
-                needsInitSegment = true;
-            }
+            reportStatus(session, position, playing);
         }
-
-        await finishStream(mediaSource, sourceBuffer);
-        status().textContent = fileName;
-    } catch (error) {
-        if (mediaSource?.readyState === "open") {
-            try {
-                mediaSource.endOfStream("decode");
-            } catch {
-                // The stream may already be closing.
-            }
-        }
-        throw error;
     } finally {
-        if (isCurrent()) {
+        if (session.isCurrent()) {
             segmentedActive = false;
-            await releaseInput(input);
+        }
+        detachSeekListener(session);
+        await releaseInput(session.input);
+    }
+}
+
+async function convertSegment(session, start, duration) {
+    const outputName = "segment.mp4";
+    await Promise.allSettled([ffmpeg.deleteFile(outputName)]);
+
+    // The first conversion doubles as the probe: its log describes the source streams.
+    const capture = Number.isNaN(session.probe.durationSeconds);
+    const lines = [];
+    ffmpegLogSink = capture ? lines : undefined;
+    let exitCode;
+    try {
+        exitCode = await ffmpeg.exec(buildSegmentArgs(session, outputName, start, duration), 180000);
+    } finally {
+        ffmpegLogSink = undefined;
+    }
+    if (!session.isCurrent() || exitCode !== 0) return null;
+
+    if (capture) {
+        session.probe = parseProbe(lines.join("\n"));
+    }
+
+    const data = await ffmpeg.readFile(outputName);
+    await Promise.allSettled([ffmpeg.deleteFile(outputName)]);
+    if (findMediaFragmentOffset(data) < 0) return null;
+
+    return data;
+}
+
+async function appendSegment(session, data, start) {
+    if (!session.sourceBuffer) {
+        await attachMediaSource(session, data);
+    }
+
+    const payload = session.needsInitSegment ? data : data.slice(findMediaFragmentOffset(data));
+    session.needsInitSegment = false;
+    // Each piece is produced with timestamps from zero, so this places it on the real timeline.
+    session.sourceBuffer.timestampOffset = start;
+
+    try {
+        await appendBuffer(session.sourceBuffer, payload);
+    } catch (error) {
+        if (error?.name !== "QuotaExceededError") throw error;
+        evictPlayedMedia(session, true);
+        await waitForIdleBuffer(session.sourceBuffer);
+        session.sourceBuffer.timestampOffset = start;
+        await appendBuffer(session.sourceBuffer, payload);
+    }
+}
+
+async function attachMediaSource(session, firstSegment) {
+    session.mediaSource = new MediaSource();
+    mediaObjectUrl = URL.createObjectURL(session.mediaSource);
+    session.player = video();
+    session.player.pause();
+    session.player.replaceChildren();
+    session.player.src = mediaObjectUrl;
+    if (session.subtitleWebVtt) {
+        addSubtitleTrack(session.player, session.subtitleWebVtt);
+    }
+
+    await once(session.mediaSource, "sourceopen");
+
+    // The MIME type is read from the produced bytes so it always matches what is appended.
+    const mimeType = describeSegment(firstSegment);
+    if (!MediaSource.isTypeSupported(mimeType)) {
+        throw new Error(`This browser cannot play ${mimeType}.`);
+    }
+
+    session.sourceBuffer = session.mediaSource.addSourceBuffer(mimeType);
+    session.sourceBuffer.mode = "segments";
+    if (Number.isFinite(session.probe.durationSeconds)) {
+        try {
+            session.mediaSource.duration = session.probe.durationSeconds;
+        } catch {
+            // A browser may refuse an explicit duration; the scrubber then grows as pieces append.
+        }
+    }
+
+    attachSeekListener(session);
+}
+
+async function beginPlayback(session) {
+    try {
+        await session.player.play();
+    } catch (error) {
+        if (error?.name !== "NotAllowedError") throw error;
+    }
+
+    if (!session.subtitleWebVtt && session.probe.hasSubtitles) {
+        const embedded = await extractEmbeddedSubtitle(session.input.path);
+        if (session.isCurrent() && embedded) {
+            addSubtitleTrack(
+                session.player,
+                shiftWebVtt(embedded, session.embeddedSubtitleOffsetMilliseconds));
         }
     }
 }
 
+function attachSeekListener(session) {
+    session.onSeeking = () => {
+        const target = session.player.currentTime;
+        if (!isBuffered(session.sourceBuffer, target)) {
+            session.seekTarget = target;
+        }
+    };
+
+    session.player.addEventListener("seeking", session.onSeeking);
+}
+
+function detachSeekListener(session) {
+    if (session.player && session.onSeeking) {
+        session.player.removeEventListener("seeking", session.onSeeking);
+        session.onSeeking = undefined;
+    }
+}
+
+function isFullyConverted(session, position) {
+    return Number.isFinite(session.probe.durationSeconds)
+        && position >= session.probe.durationSeconds - 0.2;
+}
+
+async function waitForSeek(session) {
+    while (session.isCurrent()) {
+        if (session.seekTarget !== null) return true;
+        await delay(200);
+    }
+
+    return false;
+}
+
+async function waitForBufferRoom(session, position) {
+    while (session.isCurrent()) {
+        if (session.seekTarget !== null) return true;
+        if (position - session.player.currentTime <= MAX_BUFFER_AHEAD_SECONDS) {
+            evictPlayedMedia(session, false);
+            return true;
+        }
+
+        reportStatus(session, position, true);
+        await delay(250);
+    }
+
+    return false;
+}
+
+// Releases media the viewer has already watched so long files stay within the buffer quota.
+function evictPlayedMedia(session, aggressive) {
+    const buffer = session.sourceBuffer;
+    if (!buffer || buffer.updating || buffer.buffered.length === 0) return;
+
+    const keepBehind = aggressive ? 5 : KEEP_BEHIND_SECONDS;
+    const cutoff = session.player.currentTime - keepBehind;
+    const start = buffer.buffered.start(0);
+    if (cutoff > start + 1) {
+        try {
+            buffer.remove(start, cutoff);
+        } catch {
+            // The buffer may be busy; the next pass will retry.
+        }
+    }
+}
+
+function reportStatus(session, convertedSeconds, playing) {
+    if (!playing) {
+        status().textContent = "Converting first segment…";
+        return;
+    }
+
+    const ahead = Math.max(0, convertedSeconds - session.player.currentTime);
+    const total = Number.isFinite(session.probe.durationSeconds)
+        ? ` of ${formatClock(session.probe.durationSeconds)}`
+        : "";
+    status().textContent =
+        `${session.fileName} — converted ${formatClock(convertedSeconds)}${total} (${ahead.toFixed(0)}s ahead)`;
+}
+
+function formatClock(seconds) {
+    const total = Math.max(0, Math.round(seconds));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function parseProbe(text) {
+    const duration = /Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(text);
+    const size = /Video:[^\n]*?,\s*(\d{2,5})x(\d{2,5})/.exec(text);
+    return {
+        durationSeconds: duration
+            ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3])
+            : Number.NaN,
+        videoCodec: /Stream #\d+:\d+[^\n]*:\s*Video:\s*(\w+)/.exec(text)?.[1],
+        audioCodec: /Stream #\d+:\d+[^\n]*:\s*Audio:\s*(\w+)/.exec(text)?.[1],
+        width: size ? Number(size[1]) : 0,
+        hasSubtitles: /:\s*Subtitle:\s*/.test(text)
+    };
+}
+
+function buildSegmentArgs(session, outputName, start, duration) {
+    const args = ["-y"];
+    if (start > 0) args.push("-ss", String(start));
+    args.push("-i", session.input.path, "-t", String(duration), "-map", "0:v:0", "-map", "0:a:0?");
+
+    if (session.probe.videoCodec === "h264") {
+        args.push("-c:v", "copy");
+    } else {
+        args.push(
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
+            "-crf", "30",
+            "-profile:v", "baseline",
+            "-level:v", "3.1",
+            "-pix_fmt", "yuv420p");
+        if (session.maxWidth) {
+            // min() keeps smaller sources at their native size instead of upscaling them.
+            args.push("-vf", `scale=w='min(${session.maxWidth},iw)':h=-2`);
+        }
+    }
+
+    if (session.probe.audioCodec === "aac") {
+        args.push("-c:a", "copy");
+    } else {
+        args.push("-c:a", "aac", "-b:a", "128k");
+    }
+
+    args.push(
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-reset_timestamps", "1",
+        outputName);
+    return args;
+}
+
 // WORKERFS exposes the source as a virtual file so ffmpeg reads the parts it needs
 // instead of copying the whole download into the wasm heap.
-async function mountInput(uri, extension) {
+async function mountInput(uri, extension, generation) {
     const response = await fetch(uri);
     if (!response.ok) {
         throw new Error(`Could not download the media (HTTP ${response.status}).`);
@@ -350,14 +553,9 @@ async function mountInput(uri, extension) {
 
     const blob = await response.blob();
     const name = `input${extension}`;
-    const mountPoint = "/medius";
+    const mountPoint = `/medius-${generation}`;
     try {
         await ffmpeg.createDir(mountPoint);
-    } catch {
-        // The directory survives from an earlier playback.
-    }
-
-    try {
         await ffmpeg.mount("WORKERFS", { blobs: [{ name, data: blob }] }, mountPoint);
         return { path: `${mountPoint}/${name}`, mountPoint, name };
     } catch {
@@ -368,8 +566,13 @@ async function mountInput(uri, extension) {
 }
 
 async function releaseInput(input) {
+    if (!input) return;
+
     if (input.mountPoint) {
-        await Promise.allSettled([ffmpeg.unmount(input.mountPoint)]);
+        await Promise.allSettled([
+            ffmpeg.unmount(input.mountPoint),
+            ffmpeg.deleteDir(input.mountPoint)
+        ]);
         return;
     }
 
@@ -382,10 +585,7 @@ function describeSegment(segment) {
     const avcc = findBox(segment, "avcC");
     const codecs = [];
     if (avcc >= 0 && avcc + 7 < segment.length) {
-        const profile = segment[avcc + 5];
-        const compatibility = segment[avcc + 6];
-        const level = segment[avcc + 7];
-        codecs.push(`avc1.${toHex(profile)}${toHex(compatibility)}${toHex(level)}`);
+        codecs.push(`avc1.${toHex(segment[avcc + 5])}${toHex(segment[avcc + 6])}${toHex(segment[avcc + 7])}`);
     } else {
         codecs.push("avc1.42E01F");
     }
@@ -412,74 +612,38 @@ function toHex(value) {
     return value.toString(16).padStart(2, "0").toUpperCase();
 }
 
-function parseProbe(text) {
-    const duration = /Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(text);
-    const size = /Video:[^\n]*?,\s*(\d{2,5})x(\d{2,5})/.exec(text);
-    return {
-        durationSeconds: duration
-            ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3])
-            : Number.NaN,
-        videoCodec: /Stream #\d+:\d+[^\n]*:\s*Video:\s*(\w+)/.exec(text)?.[1],
-        audioCodec: /Stream #\d+:\d+[^\n]*:\s*Audio:\s*(\w+)/.exec(text)?.[1],
-        width: size ? Number(size[1]) : 0,
-        hasSubtitles: /:\s*Subtitle:\s*/.test(text)
-    };
+function isBuffered(sourceBuffer, time) {
+    return bufferedEndCovering(sourceBuffer, time) !== null;
 }
 
-function buildSegmentArgs(inputName, outputName, start, duration, probe, maxWidth) {
-    const args = ["-y"];
-    if (start > 0) args.push("-ss", String(start));
-    args.push("-i", inputName, "-t", String(duration), "-map", "0:v:0", "-map", "0:a:0?");
+function bufferedEndCovering(sourceBuffer, time) {
+    if (!sourceBuffer) return null;
 
-    if (probe.videoCodec === "h264") {
-        args.push("-c:v", "copy");
-    } else {
-        args.push(
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "zerolatency",
-            "-crf", "30",
-            "-profile:v", "baseline",
-            "-level:v", "3.1",
-            "-pix_fmt", "yuv420p");
-        if (maxWidth) {
-            // min() keeps smaller sources at their native size instead of upscaling them.
-            args.push("-vf", `scale=w='min(${maxWidth},iw)':h=-2`);
+    const ranges = sourceBuffer.buffered;
+    for (let index = 0; index < ranges.length; index++) {
+        if (time >= ranges.start(index) - 0.25 && time < ranges.end(index) - 0.25) {
+            return ranges.end(index);
         }
     }
 
-    if (probe.audioCodec === "aac") {
-        args.push("-c:a", "copy");
-    } else {
-        args.push("-c:a", "aac", "-b:a", "128k");
-    }
-
-    args.push(
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        "-reset_timestamps", "1",
-        outputName);
-    return args;
+    return null;
 }
 
-function reportSegmentStatus(fileName, sourceBuffer, player, convertedSeconds) {
-    if (!sourceBuffer) {
-        status().textContent = "Converting first segment…";
-        return;
+async function finishStream(session) {
+    await waitForIdleBuffer(session.sourceBuffer);
+    if (session.mediaSource?.readyState === "open") {
+        try {
+            session.mediaSource.endOfStream();
+        } catch {
+            // Another append may have reopened the stream.
+        }
     }
-
-    const ahead = Math.max(0, convertedSeconds - player.currentTime);
-    status().textContent = `${fileName} — ${ahead.toFixed(0)}s buffered ahead`;
 }
 
-async function finishStream(mediaSource, sourceBuffer) {
-    if (sourceBuffer.updating) {
-        await new Promise(resolve =>
-            sourceBuffer.addEventListener("updateend", resolve, { once: true }));
-    }
-
-    if (mediaSource.readyState === "open") {
-        mediaSource.endOfStream();
-    }
+function waitForIdleBuffer(sourceBuffer) {
+    if (!sourceBuffer?.updating) return Promise.resolve();
+    return new Promise(resolve =>
+        sourceBuffer.addEventListener("updateend", resolve, { once: true }));
 }
 
 async function extractEmbeddedSubtitle(inputName) {
@@ -502,12 +666,24 @@ async function cleanupFfmpegFiles(...names) {
 
 function appendBuffer(sourceBuffer, data) {
     return new Promise((resolve, reject) => {
-        sourceBuffer.addEventListener("updateend", resolve, { once: true });
-        sourceBuffer.addEventListener(
-            "error",
-            () => reject(new Error("The browser rejected a converted media segment.")),
-            { once: true });
-        sourceBuffer.appendBuffer(data);
+        const onDone = () => {
+            sourceBuffer.removeEventListener("error", onError);
+            resolve();
+        };
+        const onError = () => {
+            sourceBuffer.removeEventListener("updateend", onDone);
+            reject(new Error("The browser rejected a converted media segment."));
+        };
+
+        sourceBuffer.addEventListener("updateend", onDone, { once: true });
+        sourceBuffer.addEventListener("error", onError, { once: true });
+        try {
+            sourceBuffer.appendBuffer(data);
+        } catch (error) {
+            sourceBuffer.removeEventListener("updateend", onDone);
+            sourceBuffer.removeEventListener("error", onError);
+            reject(error);
+        }
     });
 }
 
@@ -532,6 +708,10 @@ function once(target, eventName) {
             () => reject(new Error(`MediaSource ${eventName} failed.`)),
             { once: true });
     });
+}
+
+function delay(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
 function conversionError() {

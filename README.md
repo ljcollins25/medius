@@ -27,9 +27,9 @@ Set-Location ..\..\..
 dotnet run --project src\Medius\Medius.Browser\Medius.Browser.csproj
 ```
 
-The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Unsupported formats are converted into fragmented MP4 pieces and playback starts after the first 5-second piece, while later 15-second pieces convert in the background. The source is mounted through WORKERFS so ffmpeg reads it in place instead of copying it into the wasm heap, audio and video streams that are already browser-compatible are copied rather than re-encoded, and the output resolution steps down automatically if conversion falls behind playback.
+The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Unsupported formats are converted piece by piece into fragmented MP4: playback starts after a 5-second piece, and 10-second pieces are then converted ahead of the playhead so playback continues without gaps. Pieces are placed on the real media timeline, so the scrubber shows the true duration and seeking works — a seek converts from the exact target position, and jumping back into already-converted media resumes immediately. Media that has been watched is released so long files stay within the browser's buffer limits, the source is mounted through WORKERFS so ffmpeg reads it in place instead of copying it into the wasm heap, and streams that are already browser-compatible are copied rather than re-encoded.
 
-`wwwroot/harness.html` runs the player against local files in `wwwroot/testmedia/` without the Avalonia app or cloud storage, which is the quickest way to debug playback:
+`wwwroot/harness.html` runs the player against local files in `wwwroot/testmedia/` without the Avalonia app or cloud storage, which is the quickest way to debug playback and seeking:
 
 ```powershell
 Set-Location src\Medius\Medius.Browser
