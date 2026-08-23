@@ -41,13 +41,10 @@ self.addEventListener("fetch", event => {
         return;
     }
 
-    event.respondWith(cacheFirst(event.request));
+    event.respondWith(networkFirst(event.request));
 });
 
-async function cacheFirst(request) {
-    const cached = await caches.match(request, { ignoreSearch: true });
-    if (cached) return cached;
-
+async function networkFirst(request) {
     try {
         const response = await fetch(request);
         if (response.ok) {
@@ -56,6 +53,8 @@ async function cacheFirst(request) {
         }
         return response;
     } catch {
+        const cached = await caches.match(request, { ignoreSearch: true });
+        if (cached) return cached;
         if (request.mode === "navigate") {
             return await caches.match("./index.html");
         }
