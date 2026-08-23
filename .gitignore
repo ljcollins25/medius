@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+**/node_modules/
+.vs/
+publish/
+src/Medius/Medius.Browser/wwwroot/player.js
+src/Medius/Medius.Browser/wwwroot/ffmpeg/

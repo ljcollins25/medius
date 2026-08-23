@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+  <PropertyGroup>
+    <TargetFramework>net10.0-browser</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Medius\Medius.csproj" />
+  </ItemGroup>
+
+  <Target Name="BuildBrowserPlayer"
+          BeforeTargets="PrepareForBuild"
+          Inputs="package.json;package-lock.json;player-src.js;build-player.mjs"
+          Outputs="wwwroot\player.js;wwwroot\ffmpeg\ffmpeg-core.wasm">
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="npm ci --no-audit --no-fund" />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="npm run build" />
+  </Target>
+</Project>

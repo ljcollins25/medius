@@ -1,0 +1,120 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:Medius.ViewModels"
+             xmlns:core="using:Medius.Core"
+             xmlns:views="using:Medius.Views"
+             mc:Ignorable="d"
+             d:DesignWidth="520"
+             d:DesignHeight="900"
+             x:Class="Medius.Views.MainView"
+             x:DataType="vm:MainViewModel">
+    <Grid RowDefinitions="Auto,*">
+        <Menu Grid.Row="0">
+            <MenuItem Header="_File">
+                <MenuItem Header="Add storage mount…"
+                          Command="{Binding ShowAddMountCommand}" />
+                <MenuItem Header="Remove current mount"
+                          Command="{Binding RemoveMountCommand}" />
+            </MenuItem>
+        </Menu>
+
+        <ScrollViewer Grid.Row="1">
+            <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,*,Auto" RowSpacing="16">
+                <StackPanel Grid.Row="0" Spacing="4">
+                    <TextBlock Text="MEDIUS" FontSize="28" FontWeight="Bold" />
+                    <TextBlock Text="Cloud media, played locally" Opacity="0.65" />
+                </StackPanel>
+
+                <Border Grid.Row="1"
+                        Padding="14"
+                        CornerRadius="10"
+                        Background="#151C2C"
+                        IsVisible="{Binding IsMountEditorVisible}">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Add storage mount" FontSize="18" FontWeight="SemiBold" />
+                        <TextBox PlaceholderText="Mount name" Text="{Binding MountName}" />
+                        <ComboBox ItemsSource="{Binding ProviderKinds}" SelectedItem="{Binding ProviderKind}" />
+                        <TextBox PlaceholderText="Container/share SAS URL or endpoint" Text="{Binding Endpoint}" />
+                        <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+                            <TextBox Grid.Column="0" PlaceholderText="Storage account name" Text="{Binding AccountName}" />
+                            <TextBox Grid.Column="1" PlaceholderText="Provider root folder (optional)" Text="{Binding RootPath}" />
+                        </Grid>
+                        <TextBox PlaceholderText="Account key or OAuth token (saved locally)"
+                                 PasswordChar="●"
+                                 Text="{Binding Credential}" />
+                        <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+                            <TextBox Grid.Column="0" PlaceholderText="Tenant (common)" Text="{Binding TenantId}" />
+                            <TextBox Grid.Column="1" PlaceholderText="Entra SPA client ID" Text="{Binding ClientId}" />
+                        </Grid>
+                        <Grid ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="8">
+                            <Button Grid.Column="0" Content="Save mount" Command="{Binding SaveMountCommand}" />
+                            <Button Grid.Column="1" Content="Sign in" Command="{Binding SignInCommand}" />
+                            <Button Grid.Column="2" Content="Cancel" Command="{Binding CancelMountCommand}" />
+                            <ProgressBar Grid.Column="3" IsIndeterminate="True" IsVisible="{Binding IsBusy}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+                    <Button Grid.Column="0" Content="↑" Command="{Binding UpCommand}" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding CurrentLocation}"
+                               VerticalAlignment="Center"
+                               FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis" />
+                    <Button Grid.Column="2" Content="Open" Command="{Binding OpenCommand}" />
+                </Grid>
+
+                <ListBox x:Name="ExplorerList"
+                         Grid.Row="3"
+                         MinHeight="320"
+                         ItemsSource="{Binding Items}"
+                         SelectedItem="{Binding SelectedItem}">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="core:MediaItem">
+                            <Button Click="OnItemClicked"
+                                    Padding="0"
+                                    BorderThickness="0"
+                                    Background="Transparent"
+                                    HorizontalContentAlignment="Stretch">
+                                <Grid ColumnDefinitions="28,*,Auto" Margin="4,7">
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding IsDirectory, Converter={x:Static views:BoolConverters.FolderOrFile}}" />
+                                    <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="2"
+                                               Text="{Binding Size, Converter={x:Static views:SizeConverters.ByteSize}}"
+                                               Opacity="0.65" />
+                                </Grid>
+                            </Button>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <Border Grid.Row="4" Padding="14" CornerRadius="10" Background="#151C2C">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="{Binding SelectedSubtitleLabel}" TextTrimming="CharacterEllipsis" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Subtitle offset (milliseconds)" FontSize="12" Opacity="0.65" />
+                                <NumericUpDown Value="{Binding SubtitleOffsetMilliseconds}"
+                                               Increment="100"
+                                               Minimum="-3600000"
+                                               Maximum="3600000" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="6">
+                                <Button Content="Choose subtitle…" Command="{Binding ChooseLocalSubtitleCommand}" />
+                                <Button Content="Auto" Command="{Binding ClearSubtitleCommand}" />
+                            </StackPanel>
+                        </Grid>
+                        <Button Content="▶ Play selected video"
+                                HorizontalAlignment="Stretch"
+                                Command="{Binding PlayCommand}" />
+                        <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Opacity="0.75" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

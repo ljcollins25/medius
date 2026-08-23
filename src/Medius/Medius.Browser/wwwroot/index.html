@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Medius</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+    <main id="workspace">
+        <section id="out">
+            <div class="avalonia-splash">Loading Medius…</div>
+        </section>
+        <section id="player-shell">
+            <video id="media-player" controls playsinline></video>
+            <div id="player-status">Select a video from the browser.</div>
+        </section>
+    </main>
+    <script>
+        window.__mediusErrors = [];
+        window.addEventListener("error", event => window.__mediusErrors.push(event.error?.stack ?? event.message));
+        window.addEventListener("unhandledrejection", event => window.__mediusErrors.push(event.reason?.stack ?? String(event.reason)));
+    </script>
+    <script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Medius.Core/Medius.Core.csproj" />
+    <Project Path="src/Medius.Providers.Azure/Medius.Providers.Azure.csproj" />
+  </Folder>
+  <Folder Name="/src/Medius/">
+    <Project Path="src/Medius/Medius.Browser/Medius.Browser.csproj" />
+    <Project Path="src/Medius/Medius.Desktop/Medius.Desktop.csproj" />
+    <Project Path="src/Medius/Medius/Medius.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Medius.Core.Tests/Medius.Core.Tests.csproj" />
+  </Folder>
+</Solution>
