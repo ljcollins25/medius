@@ -27,7 +27,15 @@ Set-Location ..\..\..
 dotnet run --project src\Medius\Medius.Browser\Medius.Browser.csproj
 ```
 
-The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Unsupported formats are converted into 15-second fragmented MP4 segments and playback starts after the first segment. The browser still downloads the complete source into memory, so direct-play formats are strongly preferred for large files.
+The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Unsupported formats are converted into fragmented MP4 pieces and playback starts after the first 5-second piece, while later 15-second pieces convert in the background. The source is mounted through WORKERFS so ffmpeg reads it in place instead of copying it into the wasm heap, audio and video streams that are already browser-compatible are copied rather than re-encoded, and the output resolution steps down automatically if conversion falls behind playback.
+
+`wwwroot/harness.html` runs the player against local files in `wwwroot/testmedia/` without the Avalonia app or cloud storage, which is the quickest way to debug playback:
+
+```powershell
+Set-Location src\Medius\Medius.Browser
+npm run build
+python -m http.server 8090 --directory wwwroot
+```
 
 Use **File → Add storage mount** to attach a provider. Each mount requires a unique display name and appears as a folder at the explorer root. Browser mounts are stored under `medius.mounts.v1` in that origin's `localStorage`; desktop mounts are stored in `%LOCALAPPDATA%\Medius\mounts.json`. These records include credentials, so use a trusted local browser profile or OS account.
 

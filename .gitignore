@@ -5,3 +5,4 @@
 publish/
 src/Medius/Medius.Browser/wwwroot/player.js
 src/Medius/Medius.Browser/wwwroot/ffmpeg/
+src/Medius/Medius.Browser/wwwroot/testmedia/
