@@ -22,6 +22,7 @@
             <Setter Property="Background" Value="#18263A" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="12,8" />
+            <Setter Property="MinHeight" Value="40" />
         </Style>
         <Style Selector="Button:pointerover">
             <Setter Property="Background" Value="#213653" />
@@ -38,6 +39,7 @@
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Padding" Value="10,8" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="MinHeight" Value="52" />
         </Style>
         <Style Selector="Button.row:pointerover">
             <Setter Property="Background" Value="#15243A" />
@@ -54,6 +56,21 @@
         <Style Selector="NumericUpDown">
             <Setter Property="Background" Value="#0D1828" />
             <Setter Property="Foreground" Value="#F4F7FC" />
+        </Style>
+        <Style Selector="ToggleButton">
+            <Setter Property="MinHeight" Value="48" />
+        </Style>
+        <Style Selector="MenuItem">
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="MinHeight" Value="46" />
+            <Setter Property="Padding" Value="16,10" />
+        </Style>
+        <Style Selector="MenuItem.topMenu">
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="MinWidth" Value="76" />
+            <Setter Property="MinHeight" Value="50" />
+            <Setter Property="Padding" Value="14,8" />
         </Style>
     </UserControl.Styles>
 
@@ -85,7 +102,7 @@
                                    TextTrimming="CharacterEllipsis" />
                     </StackPanel>
                     <Menu Grid.Column="2" Background="Transparent" VerticalAlignment="Center">
-                        <MenuItem Header="•••">
+                        <MenuItem Header="Menu" Classes="topMenu">
                             <MenuItem Header="Mounts"
                                       Command="{Binding ShowMountsCommand}" />
                             <MenuItem Header="Offline files"
@@ -108,13 +125,16 @@
 
             <Grid Grid.Row="1" RowDefinitions="Auto,Auto,*,Auto">
                 <Border Grid.Row="0"
-                        Margin="14,12,14,0"
+                        Grid.RowSpan="3"
+                        Margin="14,12,14,8"
                         Padding="14"
+                        ZIndex="3"
                         CornerRadius="16"
                         Background="#101D30"
                         BorderBrush="#22344C"
                         BorderThickness="1"
                         IsVisible="{Binding IsMountEditorVisible}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Spacing="10">
                         <Grid ColumnDefinitions="*,Auto">
                             <StackPanel>
@@ -124,9 +144,9 @@
                                            FontSize="12" />
                             </StackPanel>
                             <Button Grid.Column="1"
-                                    Content="✕"
+                                    Content="Close"
                                     Command="{Binding CancelMountCommand}"
-                                    Padding="10,6" />
+                                    Padding="12,6" />
                         </Grid>
                         <TextBox PlaceholderText="Mount name" Text="{Binding MountName}" />
                         <ComboBox ItemsSource="{Binding ProviderKinds}" SelectedItem="{Binding ProviderKind}" />
@@ -152,16 +172,20 @@
                                     Command="{Binding SignInCommand}" />
                         </Grid>
                     </StackPanel>
+                    </ScrollViewer>
                 </Border>
 
                 <Border Grid.Row="0"
-                        Margin="14,12,14,0"
+                        Grid.RowSpan="3"
+                        Margin="14,12,14,8"
                         Padding="14"
+                        ZIndex="3"
                         CornerRadius="16"
                         Background="#101D30"
                         BorderBrush="#22344C"
                         BorderThickness="1"
                         IsVisible="{Binding IsAppDataPanelVisible}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Spacing="10">
                         <Grid ColumnDefinitions="*,Auto">
                             <StackPanel>
@@ -171,10 +195,44 @@
                                            FontSize="12" />
                             </StackPanel>
                             <Button Grid.Column="1"
-                                    Content="✕"
+                                    Content="Close"
                                     Command="{Binding ToggleAppDataPanelCommand}"
-                                    Padding="10,6" />
+                                    Padding="12,6" />
                         </Grid>
+                        <TextBlock Text="Restore or transfer"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Classes="muted"
+                                   Text="Import needs only the file passphrase. Scanning a QR adds its mount automatically."
+                                   FontSize="11"
+                                   TextWrapping="Wrap" />
+                        <TextBox PlaceholderText="File passphrase"
+                                 PasswordChar="●"
+                                 Text="{Binding AppDataPassphrase}" />
+                        <Grid ColumnDefinitions="*,*"
+                              ColumnSpacing="8"
+                              IsVisible="{Binding SupportsPortableAppData}">
+                            <Button Content="Import encrypted file"
+                                    Command="{Binding ImportAppDataCommand}" />
+                            <Button Grid.Column="1"
+                                    Content="Export encrypted file"
+                                    Command="{Binding ExportAppDataCommand}" />
+                        </Grid>
+                        <Grid ColumnDefinitions="*,*"
+                              ColumnSpacing="8"
+                              IsVisible="{Binding SupportsPortableAppData}">
+                            <Button Content="Scan QR camera"
+                                    Command="{Binding ScanSyncQrCameraCommand}" />
+                            <Button Grid.Column="1"
+                                    Content="Scan QR image"
+                                    Command="{Binding ScanSyncQrFileCommand}" />
+                        </Grid>
+                        <Border Height="1" Background="#293B54" Margin="0,4" />
+                        <TextBlock Text="Cloud sync destination"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Classes="muted"
+                                   Text="A mount is required only for upload, download, and generating a QR."
+                                   FontSize="11"
+                                   TextWrapping="Wrap" />
                         <ComboBox PlaceholderText="Storage mount"
                                   ItemsSource="{Binding Mounts}"
                                   SelectedItem="{Binding AppDataMount}">
@@ -186,9 +244,6 @@
                         </ComboBox>
                         <TextBox PlaceholderText="Encrypted state path"
                                  Text="{Binding AppDataPath}" />
-                        <TextBox PlaceholderText="Encryption passphrase"
-                                 PasswordChar="●"
-                                 Text="{Binding AppDataPassphrase}" />
                         <TextBlock Classes="muted"
                                    Text="The selected mount's own credential remains only on this device."
                                    FontSize="11"
@@ -201,33 +256,20 @@
                                     Content="Download &amp; merge"
                                     Command="{Binding PullAppDataCommand}" />
                         </Grid>
-                        <Grid ColumnDefinitions="*,*"
-                              ColumnSpacing="8"
-                              IsVisible="{Binding SupportsPortableAppData}">
-                            <Button Content="Export encrypted file"
-                                    Command="{Binding ExportAppDataCommand}" />
-                            <Button Grid.Column="1"
-                                    Content="Import encrypted file"
-                                    Command="{Binding ImportAppDataCommand}" />
-                        </Grid>
                         <TextBlock Text="QR quick setup includes the mount credential and passphrase. Anyone who scans it can access your synced state."
                                    IsVisible="{Binding SupportsPortableAppData}"
                                    Foreground="#FBBF24"
                                    FontSize="11"
                                    TextWrapping="Wrap" />
-                        <Grid ColumnDefinitions="*,*,*"
-                              ColumnSpacing="8"
-                              IsVisible="{Binding SupportsPortableAppData}">
-                            <Button Content="Show QR"
-                                    Command="{Binding ShowSyncQrCommand}" />
-                            <Button Grid.Column="1"
-                                    Content="Scan camera"
-                                    Command="{Binding ScanSyncQrCameraCommand}" />
-                            <Button Grid.Column="2"
-                                    Content="Scan image"
-                                    Command="{Binding ScanSyncQrFileCommand}" />
-                        </Grid>
+                        <Button Content="Show setup QR"
+                                IsVisible="{Binding SupportsPortableAppData}"
+                                Command="{Binding ShowSyncQrCommand}" />
+                        <TextBlock Classes="muted"
+                                   Text="{Binding Status}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap" />
                     </StackPanel>
+                    </ScrollViewer>
                 </Border>
 
                 <Grid Grid.Row="1"
@@ -303,7 +345,10 @@
                                             Click="OnItemMenuClicked"
                                             Tag="{Binding}"
                                             Content="•••"
-                                            Padding="9,6"
+                                            Width="52"
+                                            Height="48"
+                                            FontSize="22"
+                                            Padding="8,4"
                                             Background="Transparent"
                                             VerticalAlignment="Center" />
                                 </Grid>

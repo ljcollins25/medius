@@ -271,6 +271,60 @@ public sealed class MountPersistenceTests
         Assert.NotNull(offline.LastRemovedKey);
     }
 
+    [Fact]
+    public async Task ImportsEncryptedStateWithoutAnExistingMount()
+    {
+        var importedMount = new MountDefinition
+        {
+            Id = "imported-mount",
+            Name = "Imported",
+            ProviderKind = "Azure Blob",
+            Endpoint = "https://imported.example.test/media?sig=test"
+        };
+        var portable = new TestPortableAppDataHost
+        {
+            ImportedContent = AppStateSerializer.ToJson(new AppState
+            {
+                Mounts = [importedMount],
+                Playlists = [AppState.CreateHistoryPlaylist()]
+            })
+        };
+        PlatformServices.Mounts = new TestMountStore();
+        PlatformServices.PortableAppData = portable;
+        PlatformServices.StateProtector = new PassthroughStateProtector();
+        var viewModel = new MainViewModel();
+        await WaitForAsync(() => viewModel.Status != "Loading mounts…");
+
+        await viewModel.ImportAppDataCommand.ExecuteAsync(null);
+
+        Assert.Contains("File selected", viewModel.Status);
+        Assert.Equal(1, portable.ImportCount);
+
+        viewModel.AppDataPassphrase = "test-passphrase";
+        await viewModel.ImportAppDataCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, portable.ImportCount);
+        Assert.Equal(importedMount, Assert.Single(viewModel.Mounts));
+        Assert.Equal("Encrypted app data imported and merged.", viewModel.Status);
+    }
+
+    [Fact]
+    public async Task FailedImportAllowsChoosingAnotherFile()
+    {
+        var portable = new TestPortableAppDataHost { ImportedContent = "invalid" };
+        PlatformServices.Mounts = new TestMountStore();
+        PlatformServices.PortableAppData = portable;
+        PlatformServices.StateProtector = new FailingStateProtector();
+        var viewModel = new MainViewModel { AppDataPassphrase = "wrong-passphrase" };
+        await WaitForAsync(() => viewModel.Status != "Loading mounts…");
+
+        await viewModel.ImportAppDataCommand.ExecuteAsync(null);
+        await viewModel.ImportAppDataCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, portable.ImportCount);
+        Assert.Contains("Select the encrypted file again", viewModel.Status);
+    }
+
     private static async Task AddMountAsync(MainViewModel viewModel, string name, string endpoint)
     {
         viewModel.ShowAddMountCommand.Execute(null);
@@ -376,5 +430,44 @@ public sealed class MountPersistenceTests
 
             public Task<long> GetConvertedCacheUsageAsync(CancellationToken cancellationToken = default) =>
                 Task.FromResult(0L);
+    }
+
+    private sealed class TestPortableAppDataHost : IPortableAppDataHost
+    {
+        public required string ImportedContent { get; init; }
+
+        public int ImportCount { get; private set; }
+
+        public Task ExportFileAsync(string fileName, string content) => Task.CompletedTask;
+
+        public Task<string?> ImportFileAsync()
+        {
+            ImportCount++;
+            return Task.FromResult<string?>(ImportedContent);
+        }
+
+        public Task ShowQrAsync(string payload) => Task.CompletedTask;
+
+        public Task<string?> ScanQrCameraAsync() => Task.FromResult<string?>(null);
+
+        public Task<string?> ScanQrFileAsync() => Task.FromResult<string?>(null);
+    }
+
+    private sealed class PassthroughStateProtector : IAppStateProtector
+    {
+        public Task<string> EncryptAsync(string plaintextJson, string passphrase) =>
+            Task.FromResult(plaintextJson);
+
+        public Task<string> DecryptAsync(string envelopeJson, string passphrase) =>
+            Task.FromResult(envelopeJson);
+    }
+
+    private sealed class FailingStateProtector : IAppStateProtector
+    {
+        public Task<string> EncryptAsync(string plaintextJson, string passphrase) =>
+            throw new InvalidOperationException("Not used.");
+
+        public Task<string> DecryptAsync(string envelopeJson, string passphrase) =>
+            throw new InvalidDataException("Invalid encrypted file.");
     }
 }

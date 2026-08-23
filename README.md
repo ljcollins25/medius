@@ -40,7 +40,7 @@ The generated ffmpeg bundle and single-threaded core are served locally from `ww
 
 Starting another video immediately pauses and clears the current player, cancels its ffmpeg worker, and displays a loading overlay while the replacement video hydrates or converts.
 
-The browser UI is mobile-first: the video player is placed above a touch-oriented library on narrow screens, while wider screens keep the library and player side-by-side. Click a media-type icon once to open/play/apply it, or double-click the rest of the row. Use the row ellipsis, desktop right-click, or mobile press-and-hold for playlist and offline actions. Subtitle controls are kept in a collapsible menu.
+The browser UI is mobile-first: narrow screens keep the library full-height with a collapsible video preview at the bottom, while wider screens keep the library and player side-by-side. Starting playback expands the preview automatically. Click a media-type icon once to open/play/apply it, or double-click the rest of the row. Use the large row ellipsis, desktop right-click, or mobile press-and-hold for playlist and offline actions. Subtitle controls are kept in a collapsible menu.
 
 `wwwroot/harness.html` runs the player against local files in `wwwroot/testmedia/` without the Avalonia app or cloud storage, which is the quickest way to debug playback and seeking:
 
@@ -71,7 +71,7 @@ Choose **••• → App data sync** to designate an Azure Blob or OneDrive mo
 
 The passphrase is never persisted. The designated bootstrap mount's own credential also stays local because it is required to retrieve the encrypted document; all other mount credentials are included only inside the encrypted envelope.
 
-The encrypted envelope can also be exported as a file or transferred to another browser by QR camera/image scanning. A sync QR contains both the bootstrap credential and passphrase, so treat it like a password.
+The encrypted envelope can also be exported as a file or transferred to another browser by QR camera/image scanning. Importing a file needs its passphrase but does not require a configured mount; scanning a QR adds the encoded mount automatically. A sync QR contains both the bootstrap credential and passphrase, so treat it like a password.
 
 ## Authentication
 

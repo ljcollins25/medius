@@ -13,7 +13,14 @@
         <section id="out">
             <div class="avalonia-splash">Loading Medius…</div>
         </section>
-        <section id="player-shell">
+        <section id="player-shell" class="collapsed">
+            <button id="player-preview-toggle"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="player-stage">
+                <span>Video preview</span>
+                <span id="player-preview-toggle-icon">▲</span>
+            </button>
             <div id="player-stage">
                 <video id="media-player" controls playsinline></video>
                 <div id="player-loading" hidden>
@@ -29,7 +36,7 @@
             <button id="sync-qr-close" type="button" onclick="document.getElementById('sync-qr-overlay').hidden=true">✕</button>
             <h2 id="sync-qr-title">Medius sync</h2>
             <img id="sync-qr-image" alt="Medius sync QR code">
-            <video id="sync-qr-camera" muted playsinline hidden></video>
+            <video id="sync-qr-camera" muted autoplay playsinline hidden></video>
             <p id="sync-qr-message"></p>
         </div>
     </div>
@@ -37,6 +44,17 @@
         window.__mediusErrors = [];
         window.addEventListener("error", event => window.__mediusErrors.push(event.error?.stack ?? event.message));
         window.addEventListener("unhandledrejection", event => window.__mediusErrors.push(event.reason?.stack ?? String(event.reason)));
+        window.setPlayerPreviewExpanded = expanded => {
+            const shell = document.getElementById("player-shell");
+            const toggle = document.getElementById("player-preview-toggle");
+            shell.classList.toggle("collapsed", !expanded);
+            toggle.setAttribute("aria-expanded", String(expanded));
+            document.getElementById("player-preview-toggle-icon").textContent = expanded ? "▼" : "▲";
+        };
+        document.getElementById("player-preview-toggle").addEventListener("click", () => {
+            const shell = document.getElementById("player-shell");
+            window.setPlayerPreviewExpanded(shell.classList.contains("collapsed"));
+        });
         if ("serviceWorker" in navigator) {
             navigator.serviceWorker.register("./service-worker.js")
                 .catch(error => window.__mediusErrors.push(error?.stack ?? String(error)));

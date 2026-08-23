@@ -153,10 +153,16 @@ export function importAppDataFile() {
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ".json,.enc,application/json";
-        input.oncancel = () => resolve(null);
+        input.hidden = true;
+        document.body.appendChild(input);
+        const finish = value => {
+            input.remove();
+            resolve(value);
+        };
+        input.oncancel = () => finish(null);
         input.onchange = async () => {
             const file = input.files?.[0];
-            resolve(file ? await file.text() : null);
+            finish(file ? await file.text() : null);
         };
         input.click();
     });
@@ -192,19 +198,31 @@ export async function scanSyncQrCamera() {
     const camera = document.getElementById("sync-qr-camera");
     image.hidden = true;
     camera.hidden = false;
+    camera.autoplay = true;
+    camera.muted = true;
     document.getElementById("sync-qr-title").textContent = "Scan sync QR";
-    document.getElementById("sync-qr-message").textContent = "Point the camera at a Medius sync code.";
+    document.getElementById("sync-qr-message").textContent = "Requesting access to the rear camera…";
     overlay.hidden = false;
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+        overlay.hidden = true;
+        throw new Error("Camera access is unavailable. Use Scan image instead.");
+    }
 
     const reader = new BrowserQRCodeReader();
     return await new Promise(async (resolve, reject) => {
         let controls;
+        let stream;
         let finished = false;
+        const stopStream = () => {
+            for (const track of stream?.getTracks?.() ?? []) track.stop();
+            camera.srcObject = null;
+        };
         const finish = value => {
             if (finished) return;
             finished = true;
             controls?.stop();
-            camera.srcObject = null;
+            stopStream();
             overlay.hidden = true;
             resolve(value);
         };
@@ -212,13 +230,29 @@ export async function scanSyncQrCamera() {
             if (finished) return;
             finished = true;
             controls?.stop();
-            camera.srcObject = null;
+            stopStream();
             overlay.hidden = true;
             reject(error);
         };
         document.getElementById("sync-qr-close").onclick = () => finish(null);
         try {
-            controls = await reader.decodeFromVideoDevice(undefined, camera, result => {
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                    facingMode: { ideal: "environment" },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                }
+            });
+            if (finished) {
+                stopStream();
+                return;
+            }
+            camera.srcObject = stream;
+            await camera.play();
+            document.getElementById("sync-qr-message").textContent =
+                "Camera active. Point it at a Medius sync code.";
+            controls = await reader.decodeFromStream(stream, camera, result => {
                 if (result) finish(result.getText());
             });
             if (finished) {
@@ -236,15 +270,21 @@ export function scanSyncQrFile() {
         const input = document.createElement("input");
         input.type = "file";
         input.accept = "image/*";
-        input.oncancel = () => resolve(null);
+        input.hidden = true;
+        document.body.appendChild(input);
+        const finish = value => {
+            input.remove();
+            resolve(value);
+        };
+        input.oncancel = () => finish(null);
         input.onchange = async () => {
             const file = input.files?.[0];
-            if (!file) return resolve(null);
+            if (!file) return finish(null);
             const url = URL.createObjectURL(file);
             try {
-                resolve(await decodeSyncQrImage(url));
+                finish(await decodeSyncQrImage(url));
             } catch {
-                resolve(null);
+                finish(null);
             } finally {
                 URL.revokeObjectURL(url);
             }
@@ -302,6 +342,7 @@ export function conversionStrategy(mode) {
 
 function beginPlaybackTransition(fileName, message) {
     const generation = ++playbackGeneration;
+    window.setPlayerPreviewExpanded?.(true);
     const player = video();
     player.pause();
     player.removeAttribute("src");

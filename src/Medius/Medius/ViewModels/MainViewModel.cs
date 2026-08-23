@@ -24,6 +24,7 @@ public partial class MainViewModel : ViewModelBase
     private LocalSubtitle? _localSubtitle;
     private MediaItem? _playingVideo;
     private Playlist? _currentPlaylist;
+    private string? _pendingImportedAppDataEnvelope;
     private int _playbackRequestId;
     private int _subtitleRequestId;
 
@@ -246,22 +247,30 @@ public partial class MainViewModel : ViewModelBase
     [RelayCommand]
     private async Task ImportAppDataAsync()
     {
-        if (string.IsNullOrWhiteSpace(AppDataPassphrase))
-        {
-            Status = "Enter the file's passphrase first.";
-            return;
-        }
         try
         {
-            var envelope = await PlatformServices.PortableAppData.ImportFileAsync();
-            if (string.IsNullOrWhiteSpace(envelope)) return;
-            var plaintext = await PlatformServices.StateProtector.DecryptAsync(envelope, AppDataPassphrase);
+            _pendingImportedAppDataEnvelope ??= await PlatformServices.PortableAppData.ImportFileAsync();
+            if (string.IsNullOrWhiteSpace(_pendingImportedAppDataEnvelope))
+            {
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(AppDataPassphrase))
+            {
+                Status = "File selected. Enter its passphrase, then tap Import encrypted file again.";
+                return;
+            }
+
+            var plaintext = await PlatformServices.StateProtector.DecryptAsync(
+                _pendingImportedAppDataEnvelope,
+                AppDataPassphrase);
             await ApplyMergedStateAsync(AppStateSerializer.FromJson(plaintext));
+            _pendingImportedAppDataEnvelope = null;
             Status = "Encrypted app data imported and merged.";
         }
         catch (Exception exception)
         {
-            Status = exception.Message;
+            _pendingImportedAppDataEnvelope = null;
+            Status = $"{exception.Message} Select the encrypted file again.";
         }
     }
 
