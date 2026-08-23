@@ -6,6 +6,7 @@ let subtitleObjectUrl;
 let ffmpegLogSink;
 let segmentedActive = false;
 let playbackGeneration = 0;
+let subtitleRevision = 0;
 const ffmpegLog = [];
 
 const video = () => document.getElementById("media-player");
@@ -32,33 +33,92 @@ export function conversionStrategy(mode) {
     return mode === "Remux" ? "remux" : "transcode";
 }
 
-export async function playVideo(uri, fileName, mode, subtitleWebVtt, embeddedSubtitleOffsetMilliseconds) {
-    status().textContent = mode === "Direct" ? "Loading media…" : "Loading ffmpeg.wasm…";
-    clearObjectUrls();
-
-    if (mode === "Transcode" && "MediaSource" in window) {
-        await playTranscodedSegments(uri, fileName, subtitleWebVtt, embeddedSubtitleOffsetMilliseconds);
-        return true;
-    }
-
-    let source = uri;
-    let extractedSubtitle;
-    if (mode !== "Direct") {
-        ({ source, extractedSubtitle } = await convertForBrowser(uri, fileName, mode));
-    }
-
+function beginPlaybackTransition(fileName, message) {
+    const generation = ++playbackGeneration;
     const player = video();
     player.pause();
-    player.replaceChildren();
-    player.src = source;
-    const subtitle = subtitleWebVtt
-        ?? (extractedSubtitle
-            ? shiftWebVtt(extractedSubtitle, embeddedSubtitleOffsetMilliseconds)
-            : undefined);
-    addSubtitleTrack(player, subtitle);
-    await player.play();
-    status().textContent = fileName;
-    return true;
+    player.removeAttribute("src");
+    player.load();
+    clearSubtitleTracks();
+    clearObjectUrls();
+
+    if (segmentedActive && ffmpeg) {
+        ffmpeg.terminate();
+        ffmpeg = undefined;
+        ffmpegLogSink = undefined;
+        segmentedActive = false;
+    }
+
+    status().textContent = message;
+    showLoading(`${message} ${fileName}`);
+    return generation;
+}
+
+function showLoading(message) {
+    const overlay = document.getElementById("player-loading");
+    document.getElementById("player-loading-text").textContent = message;
+    overlay.hidden = false;
+}
+
+function hideLoading() {
+    document.getElementById("player-loading").hidden = true;
+}
+
+export async function playVideo(uri, fileName, mode, subtitleWebVtt, embeddedSubtitleOffsetMilliseconds) {
+    const generation = beginPlaybackTransition(
+        fileName,
+        mode === "Direct" ? "Loading media…" : "Loading ffmpeg.wasm…");
+
+    try {
+        if (mode === "Transcode" && "MediaSource" in window) {
+            await playTranscodedSegments(
+                uri,
+                fileName,
+                subtitleWebVtt,
+                embeddedSubtitleOffsetMilliseconds,
+                generation);
+            return true;
+        }
+
+        let source = uri;
+        let extractedSubtitle;
+        if (mode !== "Direct") {
+            segmentedActive = true;
+            try {
+                ({ source, extractedSubtitle } = await convertForBrowser(uri, fileName, mode));
+            } finally {
+                if (generation === playbackGeneration) segmentedActive = false;
+            }
+        }
+        if (generation !== playbackGeneration) return false;
+
+        const player = video();
+        player.src = source;
+        const subtitle = subtitleWebVtt
+            ?? (extractedSubtitle
+                ? shiftWebVtt(extractedSubtitle, embeddedSubtitleOffsetMilliseconds)
+                : undefined);
+        setSubtitleInternal(subtitle);
+        await player.play();
+        hideLoading();
+        status().textContent = fileName;
+        return true;
+    } catch (error) {
+        if (generation === playbackGeneration) {
+            hideLoading();
+            status().textContent = error?.message ?? String(error);
+        }
+        throw error;
+    }
+}
+
+export function setSubtitle(subtitleWebVtt) {
+    subtitleRevision++;
+    setSubtitleInternal(subtitleWebVtt);
+}
+
+export function preparePlayback(fileName) {
+    beginPlaybackTransition(fileName, "Loading media…");
 }
 
 export function pickSubtitle() {
@@ -159,16 +219,17 @@ async function convertForBrowser(uri, fileName, mode) {
 
 async function ensureFfmpegLoaded() {
     ffmpeg ??= new FFmpeg();
-    if (ffmpeg.loaded) {
+    const instance = ffmpeg;
+    if (instance.loaded) {
         return;
     }
 
-    ffmpeg.on("log", ({ message }) => {
+    instance.on("log", ({ message }) => {
         ffmpegLog.push(message);
         if (ffmpegLog.length > 40) ffmpegLog.shift();
         ffmpegLogSink?.push(message);
     });
-    ffmpeg.on("progress", ({ progress }) => {
+    instance.on("progress", ({ progress }) => {
         if (!segmentedActive && Number.isFinite(progress)) {
             status().textContent = `Converting locally… ${Math.max(0, Math.min(100, Math.round(progress * 100)))}%`;
         }
@@ -183,7 +244,7 @@ async function ensureFfmpegLoaded() {
     let timeoutId;
     try {
         await Promise.race([
-            ffmpeg.load({
+            instance.load({
                 classWorkerURL: assetUrl("./ffmpeg/worker.js"),
                 coreURL: assetUrl("./ffmpeg/ffmpeg-core.js"),
                 wasmURL: assetUrl("./ffmpeg/ffmpeg-core.wasm")
@@ -195,8 +256,8 @@ async function ensureFfmpegLoaded() {
             })
         ]);
     } catch (error) {
-        ffmpeg.terminate();
-        ffmpeg = undefined;
+        instance.terminate();
+        if (ffmpeg === instance) ffmpeg = undefined;
         throw error;
     } finally {
         clearTimeout(timeoutId);
@@ -205,8 +266,12 @@ async function ensureFfmpegLoaded() {
 
 // Converts the source piece by piece. Playback begins after the first piece and the
 // remaining pieces are produced ahead of the playhead, including after a seek.
-async function playTranscodedSegments(uri, fileName, subtitleWebVtt, embeddedSubtitleOffsetMilliseconds) {
-    const generation = ++playbackGeneration;
+async function playTranscodedSegments(
+    uri,
+    fileName,
+    subtitleWebVtt,
+    embeddedSubtitleOffsetMilliseconds,
+    generation) {
     segmentedActive = true;
     await ensureFfmpegLoaded();
 
@@ -304,6 +369,19 @@ async function runSegmentLoop(session, onStarted) {
             }
 
             reportStatus(session, position, playing);
+            if (playing
+                && !session.subtitleWebVtt
+                && session.probe.hasSubtitles
+                && !session.embeddedSubtitleStarted
+                && position >= FIRST_SEGMENT_SECONDS + SEGMENT_SECONDS) {
+                session.embeddedSubtitleStarted = true;
+                const revision = subtitleRevision;
+                const embedded = await extractEmbeddedSubtitle(session.input.path);
+                if (session.isCurrent() && revision === subtitleRevision && embedded) {
+                    setSubtitleInternal(
+                        shiftWebVtt(embedded, session.embeddedSubtitleOffsetMilliseconds));
+                }
+            }
         }
     } finally {
         if (session.isCurrent()) {
@@ -400,15 +478,7 @@ async function beginPlayback(session) {
     } catch (error) {
         if (error?.name !== "NotAllowedError") throw error;
     }
-
-    if (!session.subtitleWebVtt && session.probe.hasSubtitles) {
-        const embedded = await extractEmbeddedSubtitle(session.input.path);
-        if (session.isCurrent() && embedded) {
-            addSubtitleTrack(
-                session.player,
-                shiftWebVtt(embedded, session.embeddedSubtitleOffsetMilliseconds));
-        }
-    }
+    hideLoading();
 }
 
 function attachSeekListener(session) {
@@ -566,7 +636,7 @@ async function mountInput(uri, extension, generation) {
 }
 
 async function releaseInput(input) {
-    if (!input) return;
+    if (!input || !ffmpeg) return;
 
     if (input.mountPoint) {
         await Promise.allSettled([
@@ -658,6 +728,7 @@ async function extractEmbeddedSubtitle(inputName) {
 }
 
 async function cleanupFfmpegFiles(...names) {
+    if (!ffmpeg) return;
     await Promise.allSettled([
         ...names.map(name => ffmpeg.deleteFile(name)),
         ffmpeg.deleteFile("embedded.vtt")
@@ -731,13 +802,29 @@ function addSubtitleTrack(player, webVtt) {
     track.src = subtitleObjectUrl;
     track.default = true;
     player.appendChild(track);
+    track.addEventListener("load", () => {
+        track.track.mode = "showing";
+    }, { once: true });
+}
+
+function setSubtitleInternal(webVtt) {
+    clearSubtitleTracks();
+    if (webVtt) addSubtitleTrack(video(), webVtt);
+}
+
+function clearSubtitleTracks() {
+    for (const track of [...video().querySelectorAll("track")]) {
+        track.remove();
+    }
+    if (subtitleObjectUrl) {
+        URL.revokeObjectURL(subtitleObjectUrl);
+        subtitleObjectUrl = undefined;
+    }
 }
 
 function clearObjectUrls() {
     if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
-    if (subtitleObjectUrl) URL.revokeObjectURL(subtitleObjectUrl);
     mediaObjectUrl = undefined;
-    subtitleObjectUrl = undefined;
 }
 
 function shiftWebVtt(webVtt, offsetMilliseconds) {

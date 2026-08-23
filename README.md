@@ -13,6 +13,7 @@ Medius is a C# file browser and local-first media player. The UI is shared Avalo
 - Adjacent `.vtt`, `.srt`, `.ass`, `.ssa`, and `.sub` discovery using names such as `Movie.en.srt`
 - Explicit local or cloud subtitle selection
 - Positive and negative subtitle offsets; SRT and VTT are converted to WebVTT before playback
+- Live subtitle replacement by clicking an adjacent subtitle, without restarting or seeking the video
 - Optional Nexis-compatible Azure ghost hydration
 - Multiple named provider mounts shown at the explorer root
 - Browser `localStorage` and desktop local-disk mount persistence
@@ -28,6 +29,8 @@ dotnet run --project src\Medius\Medius.Browser\Medius.Browser.csproj
 ```
 
 The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Unsupported formats are converted piece by piece into fragmented MP4: playback starts after a 5-second piece, and 10-second pieces are then converted ahead of the playhead so playback continues without gaps. Pieces are placed on the real media timeline, so the scrubber shows the true duration and seeking works — a seek converts from the exact target position, and jumping back into already-converted media resumes immediately. Media that has been watched is released so long files stay within the browser's buffer limits, the source is mounted through WORKERFS so ffmpeg reads it in place instead of copying it into the wasm heap, and streams that are already browser-compatible are copied rather than re-encoded.
+
+Starting another video immediately pauses and clears the current player, cancels its ffmpeg worker, and displays a loading overlay while the replacement video hydrates or converts.
 
 `wwwroot/harness.html` runs the player against local files in `wwwroot/testmedia/` without the Avalonia app or cloud storage, which is the quickest way to debug playback and seeking:
 

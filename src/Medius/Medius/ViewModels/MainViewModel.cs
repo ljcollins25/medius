@@ -15,6 +15,9 @@ public partial class MainViewModel : ViewModelBase
     private IMediaProvider? _provider;
     private MountDefinition? _activeMount;
     private LocalSubtitle? _localSubtitle;
+    private MediaItem? _playingVideo;
+    private int _playbackRequestId;
+    private int _subtitleRequestId;
 
     public MainViewModel()
     {
@@ -205,9 +208,7 @@ public partial class MainViewModel : ViewModelBase
         }
         else if (MediaTypes.IsSubtitle(SelectedItem))
         {
-            SelectedSubtitle = SelectedItem;
-            _localSubtitle = null;
-            SelectedSubtitleLabel = SelectedItem.Name;
+            await ApplyCloudSubtitleAsync(SelectedItem);
         }
     }
 
@@ -241,17 +242,44 @@ public partial class MainViewModel : ViewModelBase
             return;
         }
 
-        await RunUiOperationAsync(async () =>
+        var requestId = Interlocked.Increment(ref _playbackRequestId);
+        var video = SelectedItem;
+        if (_playingVideo is not null && !_playingVideo.Path.Equals(video.Path, StringComparison.Ordinal))
         {
-            Status = "Preparing playback…";
-            var content = await _provider.GetContentAsync(SelectedItem);
-            var plan = PlaybackPlanner.Create(SelectedItem, content, Items);
-            var subtitle = await GetSubtitleWebVttAsync();
+            Interlocked.Increment(ref _subtitleRequestId);
+            SelectedSubtitle = null;
+            _localSubtitle = null;
+            SelectedSubtitleLabel = "Auto-detect adjacent or embedded subtitles";
+        }
+        _playingVideo = null;
+        IsBusy = true;
+        Status = $"Loading {video.Name}…";
+        try
+        {
+            await PlatformServices.Playback.StopAndShowLoadingAsync(video.Name);
+            var content = await _provider.GetContentAsync(video);
+            if (requestId != _playbackRequestId) return;
+
+            var plan = PlaybackPlanner.Create(video, content, Items);
+            var subtitle = await GetSubtitleWebVttAsync(video);
+            if (requestId != _playbackRequestId) return;
+
             await PlatformServices.Playback.PlayAsync(plan, subtitle, SubtitleOffsetMilliseconds);
+            if (requestId != _playbackRequestId) return;
+
+            _playingVideo = video;
             Status = plan.Mode == PlaybackMode.Direct
-                ? $"Playing {SelectedItem.Name}."
-                : $"Preparing {SelectedItem.Name} with ffmpeg.wasm.";
-        });
+                ? $"Playing {video.Name}."
+                : $"Playing {video.Name} with ffmpeg.wasm.";
+        }
+        catch (Exception exception)
+        {
+            if (requestId == _playbackRequestId) Status = exception.Message;
+        }
+        finally
+        {
+            if (requestId == _playbackRequestId) IsBusy = false;
+        }
     }
 
     [RelayCommand]
@@ -259,21 +287,36 @@ public partial class MainViewModel : ViewModelBase
     {
         await RunUiOperationAsync(async () =>
         {
+            var requestId = Interlocked.Increment(ref _subtitleRequestId);
             _localSubtitle = await PlatformServices.Playback.PickSubtitleAsync();
-            if (_localSubtitle is not null)
+            if (_localSubtitle is not null && requestId == _subtitleRequestId)
             {
                 SelectedSubtitle = null;
                 SelectedSubtitleLabel = _localSubtitle.Name;
+                var webVtt = SubtitleConverter.ToWebVtt(
+                    _localSubtitle.Content,
+                    Path.GetExtension(_localSubtitle.Name),
+                    TimeSpan.FromMilliseconds(SubtitleOffsetMilliseconds));
+                await PlatformServices.Playback.SetSubtitleAsync(webVtt);
             }
         });
     }
 
     [RelayCommand]
-    private void ClearSubtitle()
+    private async Task ClearSubtitleAsync()
     {
+        Interlocked.Increment(ref _subtitleRequestId);
         SelectedSubtitle = null;
         _localSubtitle = null;
         SelectedSubtitleLabel = "Auto-detect adjacent or embedded subtitles";
+        try
+        {
+            await PlatformServices.Playback.SetSubtitleAsync(null);
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
     }
 
     private async Task InitializeAsync()
@@ -386,36 +429,57 @@ public partial class MainViewModel : ViewModelBase
         await PlatformServices.Mounts.SaveAsync(json);
     }
 
-    private async Task<string?> GetSubtitleWebVttAsync()
+    private async Task ApplyCloudSubtitleAsync(MediaItem subtitle)
     {
-        string? content = null;
-        string? extension = null;
+        var requestId = Interlocked.Increment(ref _subtitleRequestId);
+        SelectedSubtitle = subtitle;
+        _localSubtitle = null;
+        SelectedSubtitleLabel = subtitle.Name;
+        try
+        {
+            var webVtt = await ReadSubtitleWebVttAsync(subtitle);
+            if (requestId != _subtitleRequestId) return;
 
+            await PlatformServices.Playback.SetSubtitleAsync(webVtt);
+            if (requestId != _subtitleRequestId) return;
+
+            Status = _playingVideo is null
+                ? $"Selected {subtitle.Name} for the next video."
+                : $"Showing {subtitle.Name}.";
+        }
+        catch (Exception exception)
+        {
+            if (requestId == _subtitleRequestId) Status = exception.Message;
+        }
+    }
+
+    private async Task<string?> GetSubtitleWebVttAsync(MediaItem video)
+    {
         if (_localSubtitle is not null)
         {
-            content = _localSubtitle.Content;
-            extension = Path.GetExtension(_localSubtitle.Name);
-        }
-        else
-        {
-            var subtitle = SelectedSubtitle
-                ?? SubtitleDiscovery.FindAdjacent(SelectedItem!, Items).FirstOrDefault();
-            if (subtitle is not null)
-            {
-                await using var stream = await _provider!.OpenReadAsync(subtitle);
-                using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-                content = await reader.ReadToEndAsync();
-                extension = subtitle.Extension;
-                SelectedSubtitleLabel = subtitle.Name;
-            }
+            return SubtitleConverter.ToWebVtt(
+                _localSubtitle.Content,
+                Path.GetExtension(_localSubtitle.Name),
+                TimeSpan.FromMilliseconds(SubtitleOffsetMilliseconds));
         }
 
-        return content is null
-            ? null
-            : SubtitleConverter.ToWebVtt(
-                content,
-                extension!,
-                TimeSpan.FromMilliseconds(SubtitleOffsetMilliseconds));
+        var subtitle = SelectedSubtitle
+            ?? SubtitleDiscovery.FindAdjacent(video, Items).FirstOrDefault();
+        if (subtitle is null) return null;
+
+        SelectedSubtitleLabel = subtitle.Name;
+        return await ReadSubtitleWebVttAsync(subtitle);
+    }
+
+    private async Task<string> ReadSubtitleWebVttAsync(MediaItem subtitle)
+    {
+        await using var stream = await _provider!.OpenReadAsync(subtitle);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var content = await reader.ReadToEndAsync();
+        return SubtitleConverter.ToWebVtt(
+            content,
+            subtitle.Extension,
+            TimeSpan.FromMilliseconds(SubtitleOffsetMilliseconds));
     }
 
     private async Task RunUiOperationAsync(Func<Task> operation)

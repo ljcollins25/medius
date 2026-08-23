@@ -9,6 +9,12 @@ namespace Medius.Browser;
 [SupportedOSPlatform("browser")]
 internal sealed partial class BrowserPlaybackHost : IPlaybackHost
 {
+    public Task StopAndShowLoadingAsync(string fileName, CancellationToken cancellationToken = default)
+    {
+        PreparePlayback(fileName);
+        return Task.CompletedTask;
+    }
+
     public async Task PlayAsync(
         PlaybackPlan plan,
         string? subtitleWebVtt,
@@ -35,6 +41,12 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
             document.RootElement.GetProperty("Content").GetString()!);
     }
 
+    public Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default)
+    {
+        SetSubtitle(subtitleWebVtt);
+        return Task.CompletedTask;
+    }
+
     [JSImport("playVideo", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
     private static partial Task<bool> PlayVideoAsync(
@@ -47,6 +59,12 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
     [JSImport("pickSubtitle", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.String>>]
     private static partial Task<string?> PickSubtitleFileAsync();
+
+    [JSImport("setSubtitle", "medius-player")]
+    private static partial void SetSubtitle(string? subtitleWebVtt);
+
+    [JSImport("preparePlayback", "medius-player")]
+    private static partial void PreparePlayback(string fileName);
 }
 
 [SupportedOSPlatform("browser")]

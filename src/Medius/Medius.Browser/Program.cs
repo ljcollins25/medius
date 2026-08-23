@@ -10,7 +10,7 @@ internal sealed partial class Program
 {
     private static async Task Main(string[] args)
     {
-        await JSHost.ImportAsync("medius-player", "../player.js?v=4");
+        await JSHost.ImportAsync("medius-player", "../player.js?v=5");
         PlatformServices.Playback = new BrowserPlaybackHost();
         PlatformServices.Authentication = new BrowserAuthenticationHost();
         PlatformServices.Mounts = new BrowserMountStore();

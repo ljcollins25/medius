@@ -12,7 +12,13 @@
             <div class="avalonia-splash">Loading Medius…</div>
         </section>
         <section id="player-shell">
-            <video id="media-player" controls playsinline></video>
+            <div id="player-stage">
+                <video id="media-player" controls playsinline></video>
+                <div id="player-loading" hidden>
+                    <div class="loading-spinner"></div>
+                    <div id="player-loading-text">Loading media…</div>
+                </div>
+            </div>
             <div id="player-status">Select a video from the browser.</div>
         </section>
     </main>

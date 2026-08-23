@@ -13,11 +13,15 @@ public static class PlatformServices
 
 public interface IPlaybackHost
 {
+    Task StopAndShowLoadingAsync(string fileName, CancellationToken cancellationToken = default);
+
     Task PlayAsync(
         PlaybackPlan plan,
         string? subtitleWebVtt,
         double embeddedSubtitleOffsetMilliseconds,
         CancellationToken cancellationToken = default);
+
+    Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default);
 
     Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default);
 }
@@ -42,12 +46,18 @@ public interface IMountStore
 
 internal sealed class UnsupportedPlaybackHost : IPlaybackHost
 {
+    public Task StopAndShowLoadingAsync(string fileName, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
     public Task PlayAsync(
         PlaybackPlan plan,
         string? subtitleWebVtt,
         double embeddedSubtitleOffsetMilliseconds,
         CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("HTML5 playback is available in the browser head.");
+
+    public Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default) =>
+        throw new PlatformNotSupportedException("HTML5 subtitles are available in the browser head.");
 
     public Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("Local subtitle selection is available in the browser head.");

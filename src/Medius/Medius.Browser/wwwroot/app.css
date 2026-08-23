@@ -42,6 +42,12 @@ body {
     gap: 12px;
 }
 
+#player-stage {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+}
+
 #media-player {
     width: 100%;
     height: 100%;
@@ -49,6 +55,37 @@ body {
     border-radius: 14px;
     background: #000;
     box-shadow: 0 20px 60px rgb(0 0 0 / 35%);
+}
+
+#player-loading {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 16px;
+    border-radius: 14px;
+    background: rgb(0 0 0 / 78%);
+    color: #fff;
+    font-size: 1rem;
+    z-index: 2;
+}
+
+#player-loading[hidden] {
+    display: none;
+}
+
+.loading-spinner {
+    width: 44px;
+    height: 44px;
+    border: 4px solid rgb(255 255 255 / 25%);
+    border-top-color: #69aee8;
+    border-radius: 50%;
+    animation: loading-spin 800ms linear infinite;
+}
+
+@keyframes loading-spin {
+    to { transform: rotate(360deg); }
 }
 
 #player-status {

@@ -35,6 +35,14 @@ public partial class MainView : UserControl
         }
 
         viewModel.SelectedItem = item;
+        if (MediaTypes.IsSubtitle(item))
+        {
+            viewModel.OpenCommand.Execute(null);
+            eventArgs.Handled = true;
+            _lastClickedItem = null;
+            return;
+        }
+
         var now = DateTime.UtcNow;
         var isDoubleClick = Equals(item, _lastClickedItem)
             && now - _lastItemClick <= TimeSpan.FromMilliseconds(500);
