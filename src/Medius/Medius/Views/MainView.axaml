@@ -232,7 +232,7 @@
 
                 <Grid Grid.Row="1"
                       Margin="14,12,14,8"
-                      ColumnDefinitions="Auto,*,Auto"
+                      ColumnDefinitions="Auto,*,Auto,Auto"
                       ColumnSpacing="10">
                     <Button Grid.Column="0"
                             Content="‹"
@@ -245,7 +245,13 @@
                                FontSize="15"
                                FontWeight="SemiBold"
                                TextTrimming="CharacterEllipsis" />
-                    <ProgressBar Grid.Column="2"
+                    <Button Grid.Column="2"
+                            Content="↻"
+                            FontSize="19"
+                            Command="{Binding RefreshCommand}"
+                            ToolTip.Tip="Refresh storage"
+                            Padding="11,5" />
+                    <ProgressBar Grid.Column="3"
                                  Width="54"
                                  IsIndeterminate="True"
                                  IsVisible="{Binding IsBusy}" />

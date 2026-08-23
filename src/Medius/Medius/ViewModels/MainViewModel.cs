@@ -848,6 +848,39 @@ public partial class MainViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private async Task RefreshAsync()
+    {
+        await RunUiOperationAsync(async () =>
+        {
+            if (_activeMount is not null)
+            {
+                await LoadCurrentPathAsync();
+                return;
+            }
+
+            if (IsOfflineView)
+            {
+                ShowOffline();
+                return;
+            }
+
+            if (_currentPlaylist is not null)
+            {
+                ShowPlaylist(_currentPlaylist);
+                return;
+            }
+
+            if (IsPlaylistView)
+            {
+                ShowPlaylists();
+                return;
+            }
+
+            ShowMountRoot();
+        });
+    }
+
+    [RelayCommand]
     private async Task PlayAsync()
     {
         if (SelectedItem is null || !MediaTypes.IsVideo(SelectedItem))
