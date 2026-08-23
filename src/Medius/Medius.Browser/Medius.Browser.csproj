@@ -15,6 +15,11 @@
     <ProjectReference Include="..\Medius\Medius.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Remove="wwwroot\testmedia\**" />
+    <None Remove="wwwroot\testmedia\**" />
+  </ItemGroup>
+
   <Target Name="BuildBrowserPlayer"
           BeforeTargets="PrepareForBuild"
           Inputs="package.json;package-lock.json;player-src.js;build-player.mjs"

@@ -19,13 +19,17 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         PlaybackPlan plan,
         string? subtitleWebVtt,
         double embeddedSubtitleOffsetMilliseconds,
+        double? startSeconds = null,
+        double? endSeconds = null,
         CancellationToken cancellationToken = default) =>
         _ = await PlayVideoAsync(
             plan.Content.Uri.ToString(),
             plan.Video.Name,
             plan.Mode.ToString(),
             subtitleWebVtt,
-            embeddedSubtitleOffsetMilliseconds);
+            embeddedSubtitleOffsetMilliseconds,
+            startSeconds ?? -1,
+            endSeconds ?? -1);
 
     public async Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default)
     {
@@ -63,7 +67,9 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         string fileName,
         string mode,
         string? subtitleWebVtt,
-        double embeddedSubtitleOffsetMilliseconds);
+        double embeddedSubtitleOffsetMilliseconds,
+        double startSeconds,
+        double endSeconds);
 
     [JSImport("pickSubtitle", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.String>>]
@@ -111,4 +117,66 @@ internal sealed partial class BrowserMountStore : IMountStore
 
     [JSImport("saveMounts", "medius-player")]
     private static partial void SaveMounts(string json);
+}
+
+[SupportedOSPlatform("browser")]
+internal sealed partial class BrowserOfflineMediaStore : IOfflineMediaStore
+{
+    public async Task CacheAsync(
+        string key,
+        Uri source,
+        string? bearerToken = null,
+        CancellationToken cancellationToken = default) =>
+        _ = await CacheOfflineMediaAsync(key, source.ToString(), bearerToken);
+
+    public async Task<Uri?> ResolveAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var uri = await GetOfflineMediaUriAsync(key);
+        return string.IsNullOrEmpty(uri) ? null : new Uri(uri, UriKind.Absolute);
+    }
+
+    public Task<bool> RemoveAsync(string key, CancellationToken cancellationToken = default) =>
+        RemoveOfflineMediaAsync(key);
+
+    public async Task<OfflineStorageEstimate> EstimateAsync(CancellationToken cancellationToken = default)
+    {
+        using var document = JsonDocument.Parse(await GetOfflineStorageEstimateAsync());
+        return new OfflineStorageEstimate(
+            document.RootElement.GetProperty("usage").GetInt64(),
+            document.RootElement.GetProperty("quota").GetInt64());
+    }
+
+    [JSImport("cacheOfflineMedia", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
+    private static partial Task<bool> CacheOfflineMediaAsync(string key, string uri, string? bearerToken);
+
+    [JSImport("removeOfflineMedia", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
+    private static partial Task<bool> RemoveOfflineMediaAsync(string key);
+
+    [JSImport("getOfflineMediaUri", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string?> GetOfflineMediaUriAsync(string key);
+
+    [JSImport("getOfflineStorageEstimate", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string> GetOfflineStorageEstimateAsync();
+}
+
+[SupportedOSPlatform("browser")]
+internal sealed partial class BrowserAppStateProtector : IAppStateProtector
+{
+    public Task<string> EncryptAsync(string plaintextJson, string passphrase) =>
+        EncryptAppStateAsync(plaintextJson, passphrase);
+
+    public Task<string> DecryptAsync(string envelopeJson, string passphrase) =>
+        DecryptAppStateAsync(envelopeJson, passphrase);
+
+    [JSImport("encryptAppState", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string> EncryptAppStateAsync(string plaintextJson, string passphrase);
+
+    [JSImport("decryptAppState", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string> DecryptAppStateAsync(string envelopeJson, string passphrase);
 }

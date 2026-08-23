@@ -14,6 +14,8 @@ internal sealed partial class Program
         PlatformServices.Playback = new BrowserPlaybackHost();
         PlatformServices.Authentication = new BrowserAuthenticationHost();
         PlatformServices.Mounts = new BrowserMountStore();
+        PlatformServices.Offline = new BrowserOfflineMediaStore();
+        PlatformServices.StateProtector = new BrowserAppStateProtector();
         await BuildAvaloniaApp()
             .WithInterFont()
             .StartBrowserAppAsync("out");

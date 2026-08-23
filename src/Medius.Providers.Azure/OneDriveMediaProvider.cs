@@ -4,7 +4,7 @@ using Medius.Core;
 
 namespace Medius.Providers.Azure;
 
-public sealed class OneDriveMediaProvider : IMediaProvider, IDisposable
+public sealed class OneDriveMediaProvider : IMediaProvider, IWritableAppDataProvider, IDisposable
 {
     private const string GraphRoot = "https://graph.microsoft.com/v1.0/me/drive";
     private readonly HttpClient _httpClient;
@@ -79,8 +79,39 @@ public sealed class OneDriveMediaProvider : IMediaProvider, IDisposable
         return await _httpClient.GetStreamAsync(content.Uri, cancellationToken);
     }
 
+    public async Task<string?> ReadTextAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.GetAsync(GetContentUrl(path), cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            response.Dispose();
+            return null;
+        }
+        using (response)
+        {
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadAsStringAsync(cancellationToken);
+        }
+    }
+
+    public async Task WriteTextAsync(
+        string path,
+        string content,
+        CancellationToken cancellationToken = default)
+    {
+        using var body = new StringContent(content, System.Text.Encoding.UTF8, "application/json");
+        using var response = await _httpClient.PutAsync(GetContentUrl(path), body, cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
     public void Dispose() => _httpClient.Dispose();
 
     private static string CombinePath(string left, string right) =>
         string.Join("/", new[] { left.Trim('/'), right.Trim('/') }.Where(value => value.Length > 0));
+
+    private string GetContentUrl(string path)
+    {
+        var fullPath = CombinePath(_rootPath, path);
+        return $"{GraphRoot}/root:/{Uri.EscapeDataString(fullPath).Replace("%2F", "/", StringComparison.OrdinalIgnoreCase)}:/content";
+    }
 }

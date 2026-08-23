@@ -86,10 +86,21 @@
                     </StackPanel>
                     <Menu Grid.Column="2" Background="Transparent" VerticalAlignment="Center">
                         <MenuItem Header="•••">
+                            <MenuItem Header="Mounts"
+                                      Command="{Binding ShowMountsCommand}" />
+                            <MenuItem Header="Offline files"
+                                      Command="{Binding ShowOfflineCommand}" />
+                            <MenuItem Header="Playlists"
+                                      Command="{Binding ShowPlaylistsCommand}" />
+                            <MenuItem Header="History"
+                                      Command="{Binding ShowHistoryCommand}" />
+                            <Separator />
                             <MenuItem Header="Add storage mount…"
                                       Command="{Binding ShowAddMountCommand}" />
                             <MenuItem Header="Remove current mount"
                                       Command="{Binding RemoveMountCommand}" />
+                            <MenuItem Header="App data sync…"
+                                      Command="{Binding ToggleAppDataPanelCommand}" />
                         </MenuItem>
                     </Menu>
                 </Grid>
@@ -139,6 +150,56 @@
                             <Button Grid.Column="1"
                                     Content="Sign in"
                                     Command="{Binding SignInCommand}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="0"
+                        Margin="14,12,14,0"
+                        Padding="14"
+                        CornerRadius="16"
+                        Background="#101D30"
+                        BorderBrush="#22344C"
+                        BorderThickness="1"
+                        IsVisible="{Binding IsAppDataPanelVisible}">
+                    <StackPanel Spacing="10">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel>
+                                <TextBlock Text="Encrypted app data" FontSize="18" FontWeight="SemiBold" />
+                                <TextBlock Classes="muted"
+                                           Text="Sync mounts, playlists, history, and offline metadata"
+                                           FontSize="12" />
+                            </StackPanel>
+                            <Button Grid.Column="1"
+                                    Content="✕"
+                                    Command="{Binding ToggleAppDataPanelCommand}"
+                                    Padding="10,6" />
+                        </Grid>
+                        <ComboBox PlaceholderText="Storage mount"
+                                  ItemsSource="{Binding Mounts}"
+                                  SelectedItem="{Binding AppDataMount}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Name}" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <TextBox PlaceholderText="Encrypted state path"
+                                 Text="{Binding AppDataPath}" />
+                        <TextBox PlaceholderText="Encryption passphrase"
+                                 PasswordChar="●"
+                                 Text="{Binding AppDataPassphrase}" />
+                        <TextBlock Classes="muted"
+                                   Text="The selected mount's own credential remains only on this device."
+                                   FontSize="11"
+                                   TextWrapping="Wrap" />
+                        <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+                            <Button Classes="accent"
+                                    Content="Save &amp; upload"
+                                    Command="{Binding SaveAppDataSettingsCommand}" />
+                            <Button Grid.Column="1"
+                                    Content="Download &amp; merge"
+                                    Command="{Binding PullAppDataCommand}" />
                         </Grid>
                     </StackPanel>
                 </Border>
@@ -275,6 +336,95 @@
                                 <Button Content="Use automatic subtitles"
                                         Command="{Binding ClearSubtitleCommand}"
                                         HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <ToggleButton IsChecked="{Binding IsPlaylistPanelVisible}"
+                                     Padding="10,7"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     HorizontalContentAlignment="Stretch">
+                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                                <Border Width="36" Height="36" CornerRadius="12" Background="#123727">
+                                   <TextBlock Text="≡"
+                                              Foreground="#4ADE80"
+                                              FontWeight="Bold"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                   <TextBlock Text="Playlists &amp; offline" FontWeight="SemiBold" />
+                                   <TextBlock Classes="muted"
+                                              Text="{Binding OfflineStorageLabel}"
+                                              FontSize="11" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="2"
+                                          Text="▼"
+                                          FontSize="11"
+                                          Foreground="#8493A9"
+                                          VerticalAlignment="Center" />
+                            </Grid>
+                        </ToggleButton>
+                        <StackPanel Margin="4,2" Spacing="9" IsVisible="{Binding IsPlaylistPanelVisible}">
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                <TextBox PlaceholderText="New playlist name"
+                                        Text="{Binding NewPlaylistName}" />
+                                <Button Grid.Column="1"
+                                       Content="Create"
+                                       Command="{Binding CreatePlaylistCommand}" />
+                            </Grid>
+                            <ComboBox PlaceholderText="Target playlist"
+                                     ItemsSource="{Binding Playlists}"
+                                     SelectedItem="{Binding SelectedPlaylist}">
+                                <ComboBox.ItemTemplate>
+                                   <DataTemplate>
+                                       <TextBlock Text="{Binding Name}" />
+                                   </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+                                <StackPanel>
+                                   <TextBlock Classes="muted" Text="Start seconds" FontSize="11" />
+                                   <NumericUpDown Value="{Binding PlaylistStartSeconds}"
+                                                  Minimum="0"
+                                                  Maximum="86400" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                   <TextBlock Classes="muted" Text="End seconds" FontSize="11" />
+                                   <NumericUpDown Value="{Binding PlaylistEndSeconds}"
+                                                  Minimum="0"
+                                                  Maximum="86400" />
+                                </StackPanel>
+                            </Grid>
+                            <Button Content="Add selected video to playlist"
+                                   Command="{Binding AddSelectedToPlaylistCommand}" />
+                            <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+                                <Button Content="Keep selected offline"
+                                       Command="{Binding KeepSelectedOfflineCommand}" />
+                                <Button Grid.Column="1"
+                                       Content="Remove offline copy"
+                                       Command="{Binding RemoveSelectedOfflineCommand}" />
+                            </Grid>
+                            <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                                <Button Content="Pin playlist"
+                                       Command="{Binding TogglePlaylistOfflineCommand}" />
+                                <Button Grid.Column="1"
+                                       Content="Remove item"
+                                       Command="{Binding RemoveSelectedPlaylistEntryCommand}" />
+                                <Button Grid.Column="2"
+                                       Content="Clear"
+                                       Command="{Binding ClearCurrentPlaylistCommand}" />
+                            </Grid>
+                            <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                                <Button Content="Offline"
+                                       Command="{Binding ShowOfflineCommand}" />
+                                <Button Grid.Column="1"
+                                       Content="Playlists"
+                                       Command="{Binding ShowPlaylistsCommand}" />
+                                <Button Grid.Column="2"
+                                       Content="History"
+                                       Command="{Binding ShowHistoryCommand}" />
+                            </Grid>
+                            <Button Content="Delete selected playlist"
+                                   Command="{Binding DeleteSelectedPlaylistCommand}" />
                         </StackPanel>
                         <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
                             <Button Content="+ Add storage"

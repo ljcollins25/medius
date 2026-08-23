@@ -13,6 +13,7 @@ const video = () => document.getElementById("media-player");
 const status = () => document.getElementById("player-status");
 const mountsKey = "medius.mounts.v1";
 const ffmpegAssetVersion = "3";
+const offlineCacheName = "medius-media-v1";
 
 // Playback starts after this much media is ready; later pieces are longer for efficiency.
 const FIRST_SEGMENT_SECONDS = 5;
@@ -28,6 +29,128 @@ export function loadMounts() {
 
 export function saveMounts(json) {
     localStorage.setItem(mountsKey, json);
+}
+
+export async function cacheOfflineMedia(key, uri, bearerToken) {
+    if (!("caches" in window)) {
+        throw new Error("This browser does not support offline media storage.");
+    }
+
+    await navigator.storage?.persist?.();
+    const response = await fetch(uri, bearerToken
+        ? { headers: { Authorization: `Bearer ${bearerToken}`, "x-ms-version": "2023-11-03" } }
+        : undefined);
+    if (!response.ok) {
+        throw new Error(`Offline download failed (HTTP ${response.status}).`);
+    }
+
+    const cache = await caches.open(offlineCacheName);
+    await cache.put(offlineMediaRequest(key), response);
+    return true;
+}
+
+export async function removeOfflineMedia(key) {
+    if (!("caches" in window)) return false;
+    const cache = await caches.open(offlineCacheName);
+    return await cache.delete(offlineMediaRequest(key));
+}
+
+export async function getOfflineMediaUri(key) {
+    if (!("caches" in window)) return null;
+    const cache = await caches.open(offlineCacheName);
+    return await cache.match(offlineMediaRequest(key))
+        ? offlineMediaRequest(key).url
+        : null;
+}
+
+export async function getOfflineStorageEstimate() {
+    const estimate = await navigator.storage?.estimate?.();
+    return JSON.stringify({
+        usage: estimate?.usage ?? 0,
+        quota: estimate?.quota ?? 0
+    });
+}
+
+export async function encryptAppState(plaintextJson, passphrase) {
+    const iterations = 210000;
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveAppStateKey(passphrase, salt, iterations, ["encrypt"]);
+    const encrypted = new Uint8Array(await crypto.subtle.encrypt(
+        {
+            name: "AES-GCM",
+            iv: nonce,
+            additionalData: new TextEncoder().encode("medius-app-state-v1"),
+            tagLength: 128
+        },
+        key,
+        new TextEncoder().encode(plaintextJson)));
+    const tag = encrypted.slice(encrypted.length - 16);
+    const ciphertext = encrypted.slice(0, encrypted.length - 16);
+    return JSON.stringify({
+        Version: 1,
+        Iterations: iterations,
+        Salt: bytesToBase64(salt),
+        Nonce: bytesToBase64(nonce),
+        Tag: bytesToBase64(tag),
+        Ciphertext: bytesToBase64(ciphertext)
+    });
+}
+
+export async function decryptAppState(envelopeJson, passphrase) {
+    const envelope = JSON.parse(envelopeJson);
+    if (envelope.Version !== 1) {
+        throw new Error(`Unsupported app-state envelope version ${envelope.Version}.`);
+    }
+    const salt = base64ToBytes(envelope.Salt);
+    const nonce = base64ToBytes(envelope.Nonce);
+    const ciphertext = base64ToBytes(envelope.Ciphertext);
+    const tag = base64ToBytes(envelope.Tag);
+    const encrypted = new Uint8Array(ciphertext.length + tag.length);
+    encrypted.set(ciphertext);
+    encrypted.set(tag, ciphertext.length);
+    const key = await deriveAppStateKey(passphrase, salt, envelope.Iterations, ["decrypt"]);
+    const plaintext = await crypto.subtle.decrypt(
+        {
+            name: "AES-GCM",
+            iv: nonce,
+            additionalData: new TextEncoder().encode("medius-app-state-v1"),
+            tagLength: 128
+        },
+        key,
+        encrypted);
+    return new TextDecoder().decode(plaintext);
+}
+
+async function deriveAppStateKey(passphrase, salt, iterations, usages) {
+    const material = await crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(passphrase),
+        "PBKDF2",
+        false,
+        ["deriveKey"]);
+    return await crypto.subtle.deriveKey(
+        { name: "PBKDF2", hash: "SHA-256", salt, iterations },
+        material,
+        { name: "AES-GCM", length: 256 },
+        false,
+        usages);
+}
+
+function bytesToBase64(bytes) {
+    let binary = "";
+    for (const value of bytes) binary += String.fromCharCode(value);
+    return btoa(binary);
+}
+
+function base64ToBytes(value) {
+    return Uint8Array.from(atob(value), character => character.charCodeAt(0));
+}
+
+function offlineMediaRequest(key) {
+    return new Request(
+        new URL(`./__medius_offline/${encodeURIComponent(key)}`, location.href),
+        { method: "GET" });
 }
 
 export function conversionStrategy(mode) {
@@ -65,7 +188,14 @@ function hideLoading() {
     document.getElementById("player-loading").hidden = true;
 }
 
-export async function playVideo(uri, fileName, mode, subtitleWebVtt, embeddedSubtitleOffsetMilliseconds) {
+export async function playVideo(
+    uri,
+    fileName,
+    mode,
+    subtitleWebVtt,
+    embeddedSubtitleOffsetMilliseconds,
+    startSeconds = -1,
+    endSeconds = -1) {
     const generation = beginPlaybackTransition(
         fileName,
         mode === "Direct" ? "Loading media…" : "Loading ffmpeg.wasm…");
@@ -77,7 +207,9 @@ export async function playVideo(uri, fileName, mode, subtitleWebVtt, embeddedSub
                 fileName,
                 subtitleWebVtt,
                 embeddedSubtitleOffsetMilliseconds,
-                generation);
+                generation,
+                startSeconds,
+                endSeconds);
             return true;
         }
 
@@ -95,6 +227,7 @@ export async function playVideo(uri, fileName, mode, subtitleWebVtt, embeddedSub
 
         const player = video();
         player.src = source;
+        configurePlaybackRange(player, startSeconds, endSeconds);
         const subtitle = subtitleWebVtt
             ?? (extractedSubtitle
                 ? shiftWebVtt(extractedSubtitle, embeddedSubtitleOffsetMilliseconds)
@@ -281,7 +414,9 @@ async function playTranscodedSegments(
     fileName,
     subtitleWebVtt,
     embeddedSubtitleOffsetMilliseconds,
-    generation) {
+    generation,
+    startSeconds,
+    endSeconds) {
     segmentedActive = true;
     await ensureFfmpegLoaded();
 
@@ -302,6 +437,9 @@ async function playTranscodedSegments(
         mediaSource: null,
         sourceBuffer: null,
         player: null
+        ,
+        startSeconds: startSeconds >= 0 ? startSeconds : 0,
+        endSeconds: endSeconds > startSeconds ? endSeconds : null
     };
 
     session.input = await mountInput(uri, extension, generation);
@@ -324,7 +462,7 @@ async function playTranscodedSegments(
 }
 
 async function runSegmentLoop(session, onStarted) {
-    let position = 0;
+    let position = session.startSeconds;
     let playing = false;
     // A short piece is converted first, and again after each seek, so playback resumes quickly.
     let useShortSegment = true;
@@ -480,6 +618,7 @@ async function attachMediaSource(session, firstSegment) {
     }
 
     attachSeekListener(session);
+    configurePlaybackRange(session.player, session.startSeconds, session.endSeconds);
 }
 
 async function beginPlayback(session) {
@@ -510,8 +649,33 @@ function detachSeekListener(session) {
 }
 
 function isFullyConverted(session, position) {
-    return Number.isFinite(session.probe.durationSeconds)
-        && position >= session.probe.durationSeconds - 0.2;
+    const end = session.endSeconds
+        ?? (Number.isFinite(session.probe.durationSeconds) ? session.probe.durationSeconds : null);
+    return end !== null && position >= end - 0.2;
+}
+
+function configurePlaybackRange(player, startSeconds, endSeconds) {
+    player.onloadedmetadata = null;
+    player.ontimeupdate = null;
+    if (startSeconds >= 0) {
+        const seek = () => {
+            if (Math.abs(player.currentTime - startSeconds) > 0.25) {
+                player.currentTime = startSeconds;
+            }
+        };
+        if (player.readyState >= HTMLMediaElement.HAVE_METADATA) seek();
+        else player.onloadedmetadata = seek;
+    }
+
+    if (endSeconds > startSeconds) {
+        const stopAtEnd = () => {
+            if (player.currentTime >= endSeconds) {
+                player.pause();
+                player.currentTime = endSeconds;
+            }
+        };
+        player.ontimeupdate = stopAtEnd;
+    }
 }
 
 async function waitForSeek(session) {

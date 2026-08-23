@@ -1,0 +1,16 @@
+{
+  "name": "Medius",
+  "short_name": "Medius",
+  "description": "Cloud media, played locally.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#060c16",
+  "theme_color": "#08111f",
+  "icons": [
+    {
+      "src": "./favicon.ico",
+      "sizes": "any",
+      "type": "image/x-icon"
+    }
+  ]
+}

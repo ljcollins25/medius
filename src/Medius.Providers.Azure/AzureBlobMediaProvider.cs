@@ -4,10 +4,11 @@ using Azure.Storage.Blobs.Specialized;
 using Azure.Storage.Sas;
 using Medius.Core;
 using System.Net.Http.Headers;
+using System.Text;
 
 namespace Medius.Providers.Azure;
 
-public sealed class AzureBlobMediaProvider : IMediaProvider
+public sealed class AzureBlobMediaProvider : IMediaProvider, IWritableAppDataProvider
 {
     private readonly BlobContainerClient _container;
     private readonly AzureBlobOptions _options;
@@ -103,6 +104,29 @@ public sealed class AzureBlobMediaProvider : IMediaProvider
         response.EnsureSuccessStatusCode();
         var content = await response.Content.ReadAsByteArrayAsync(cancellationToken);
         return new MemoryStream(content, writable: false);
+    }
+
+    public async Task<string?> ReadTextAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var blob = _container.GetBlockBlobClient(CombinePath(_options.RootPrefix, path));
+        if (!await blob.ExistsAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var download = await blob.DownloadContentAsync(cancellationToken);
+        return download.Value.Content.ToString();
+    }
+
+    public async Task WriteTextAsync(string path, string content, CancellationToken cancellationToken = default)
+    {
+        var blob = _container.GetBlockBlobClient(CombinePath(_options.RootPrefix, path));
+        var bytes = Encoding.UTF8.GetBytes(content);
+        using var stream = new MemoryStream(bytes);
+        await blob.UploadAsync(
+            stream,
+            new BlobUploadOptions { HttpHeaders = new BlobHttpHeaders { ContentType = "application/json" } },
+            cancellationToken);
     }
 
     private static long? GetEffectiveSize(BlobItem blob)

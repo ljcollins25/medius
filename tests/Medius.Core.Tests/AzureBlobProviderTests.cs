@@ -73,4 +73,36 @@ public sealed class AzureBlobProviderTests
         Assert.Equal(item.Size, content.Size);
         Assert.True(stream.ReadByte() >= 0);
     }
+
+    [Fact]
+    public void ImplementsWritableAppDataProviderForAppStateSync()
+    {
+        Assert.True(typeof(IWritableAppDataProvider).IsAssignableFrom(typeof(AzureBlobMediaProvider)));
+        Assert.True(typeof(IWritableAppDataProvider).IsAssignableFrom(typeof(OneDriveMediaProvider)));
+    }
+
+    [Fact]
+    public async Task RoundTripsAppDataTextWhenConfigured()
+    {
+        var sasUrl = Environment.GetEnvironmentVariable("MEDIUS_TEST_AZURE_BLOB_SAS");
+        if (string.IsNullOrWhiteSpace(sasUrl))
+        {
+            return;
+        }
+
+        IWritableAppDataProvider provider = new AzureBlobMediaProvider(new AzureBlobOptions
+        {
+            ContainerUri = new Uri(sasUrl),
+        });
+
+        var path = $"medius-test/app-state-{Guid.NewGuid():N}.json.enc";
+        var missing = await provider.ReadTextAsync(path);
+        Assert.Null(missing);
+
+        var content = $$"""{"probe":"{{Guid.NewGuid()}}"}""";
+        await provider.WriteTextAsync(path, content);
+
+        var roundTripped = await provider.ReadTextAsync(path);
+        Assert.Equal(content, roundTripped);
+    }
 }

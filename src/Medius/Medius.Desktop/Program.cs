@@ -13,6 +13,7 @@ sealed class Program
     public static void Main(string[] args)
     {
         PlatformServices.Mounts = new DesktopMountStore();
+        PlatformServices.Offline = new DesktopOfflineMediaStore();
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

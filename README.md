@@ -17,7 +17,12 @@ Medius is a C# file browser and local-first media player. The UI is shared Avalo
 - Subtitle appearance controls for font size and background opacity
 - Optional Nexis-compatible Azure ghost hydration
 - Multiple named provider mounts shown at the explorer root
-- Browser `localStorage` and desktop local-disk mount persistence
+- Browser Cache Storage and desktop local-disk original-file offline media
+- Installable/offline-capable browser shell with service-worker caching and Range responses
+- Custom playlists with optional start/end ranges and keep-offline pinning
+- Automatic History playlist with per-item removal and clearing
+- Encrypted app-state synchronization through a designated Azure Blob mount
+- Browser `localStorage` and desktop local-disk app-state persistence
 
 ## Run
 
@@ -43,7 +48,26 @@ npm run build
 python -m http.server 8090 --directory wwwroot
 ```
 
-Use **File → Add storage mount** to attach a provider. Each mount requires a unique display name and appears as a folder at the explorer root. Browser mounts are stored under `medius.mounts.v1` in that origin's `localStorage`; desktop mounts are stored in `%LOCALAPPDATA%\Medius\mounts.json`. These records include credentials, so use a trusted local browser profile or OS account.
+Use **••• → Add storage mount** to attach a provider. Each mount requires a unique display name and appears as a folder at the explorer root. Browser state is stored under `medius.mounts.v1` in that origin's `localStorage`; desktop state is stored in `%LOCALAPPDATA%\Medius\mounts.json`. These local records include credentials, so use a trusted local browser profile or OS account.
+
+## Offline media and playlists
+
+Open **Playlists & offline** to:
+
+- Keep the selected original media file offline or remove its offline copy.
+- View all current offline files.
+- Create playlists and add a selected video with optional start/end seconds.
+- Pin a playlist so all its original files are downloaded for offline use.
+- Open or clear the automatic **History** playlist.
+- Remove individual playlist/history entries or delete custom playlists.
+
+The browser requests persistent Cache Storage, and a service worker caches the app shell plus media. Cached media is exposed through same-origin URLs with HTTP Range support, so direct video seeking and ffmpeg conversion both work with the network disconnected. AVI/MKV retain their original quality and embedded streams, then convert locally when played. The published app must be served over HTTPS (or `localhost`) for service workers and persistent storage.
+
+## Encrypted app-data sync
+
+Choose **••• → App data sync** to designate an Azure Blob or OneDrive mount and path for synchronized state (the default is `.medius-app-state.json.enc` at the mount root). Mounts, encrypted credentials, playlists, history, and offline intent are serialized into an AES-256-GCM envelope derived from a user passphrase with PBKDF2-SHA256. Browser encryption uses Web Crypto; desktop uses .NET cryptography, and the envelope formats are compatible.
+
+The passphrase is never persisted. The designated bootstrap mount's own credential also stays local because it is required to retrieve the encrypted document; all other mount credentials are included only inside the encrypted envelope.
 
 ## Authentication
 
@@ -56,7 +80,7 @@ Web-only OAuth requires an Entra app registration because Microsoft cannot issue
 3. Select the provider and choose **Sign in**.
 4. Grant `https://storage.azure.com/user_impersonation` for Azure Storage or `Files.Read User.Read` for OneDrive.
 
-No token or key is persisted by Medius. Azure Storage must allow the SPA origin in its CORS rules. Permit `GET, HEAD, OPTIONS`; ghost hydration additionally needs `PUT` and authorization capable of reading tags/block lists and committing blocks.
+Tokens and keys are persisted in local app state when a mount is saved, and can optionally be synchronized only inside the encrypted app-state envelope. Azure Storage must allow the SPA origin in its CORS rules. Permit `GET, HEAD, OPTIONS`; ghost hydration and app-data sync additionally need `PUT` and authorization capable of reading tags/block lists and writing blobs.
 
 ## Ghost blobs
 

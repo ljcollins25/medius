@@ -4,6 +4,8 @@
     <title>Medius</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#08111f">
+    <link rel="manifest" href="./manifest.webmanifest">
     <link rel="stylesheet" href="./app.css">
 </head>
 <body>
@@ -26,6 +28,10 @@
         window.__mediusErrors = [];
         window.addEventListener("error", event => window.__mediusErrors.push(event.error?.stack ?? event.message));
         window.addEventListener("unhandledrejection", event => window.__mediusErrors.push(event.reason?.stack ?? String(event.reason)));
+        if ("serviceWorker" in navigator) {
+            navigator.serviceWorker.register("./service-worker.js")
+                .catch(error => window.__mediusErrors.push(error?.stack ?? String(error)));
+        }
     </script>
     <script type="module" src="./main.js"></script>
 </body>

@@ -12,10 +12,16 @@ namespace Medius.ViewModels;
 public partial class MainViewModel : ViewModelBase
 {
     private const string MountIdKey = "medius.mountId";
+    private const string EntryKindKey = "medius.kind";
+    private const string PlaylistIdKey = "medius.playlistId";
+    private const string StartSecondsKey = "medius.startSeconds";
+    private const string EndSecondsKey = "medius.endSeconds";
     private IMediaProvider? _provider;
     private MountDefinition? _activeMount;
+    private AppState _appState = new();
     private LocalSubtitle? _localSubtitle;
     private MediaItem? _playingVideo;
+    private Playlist? _currentPlaylist;
     private int _playbackRequestId;
     private int _subtitleRequestId;
 
@@ -28,6 +34,10 @@ public partial class MainViewModel : ViewModelBase
     public IReadOnlyList<string> ProviderKinds { get; }
 
     public ObservableCollection<MountDefinition> Mounts { get; } = [];
+
+    public ObservableCollection<Playlist> Playlists { get; } = [];
+
+    public ObservableCollection<OfflineMediaMetadata> OfflineFiles { get; } = [];
 
     public ObservableCollection<MediaItem> Items { get; } = [];
 
@@ -62,6 +72,42 @@ public partial class MainViewModel : ViewModelBase
     public partial bool IsSubtitleMenuOpen { get; set; }
 
     [ObservableProperty]
+    public partial bool IsPlaylistPanelVisible { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsAppDataPanelVisible { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsOfflineView { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsPlaylistView { get; set; }
+
+    [ObservableProperty]
+    public partial string NewPlaylistName { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial Playlist? SelectedPlaylist { get; set; }
+
+    [ObservableProperty]
+    public partial double? PlaylistStartSeconds { get; set; }
+
+    [ObservableProperty]
+    public partial double? PlaylistEndSeconds { get; set; }
+
+    [ObservableProperty]
+    public partial MountDefinition? AppDataMount { get; set; }
+
+    [ObservableProperty]
+    public partial string AppDataPath { get; set; } = ".medius-app-state.json.enc";
+
+    [ObservableProperty]
+    public partial string AppDataPassphrase { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string OfflineStorageLabel { get; set; } = "Offline storage";
+
+    [ObservableProperty]
     public partial string CurrentPath { get; set; } = string.Empty;
 
     [ObservableProperty]
@@ -94,6 +140,7 @@ public partial class MainViewModel : ViewModelBase
     [RelayCommand]
     private void ShowAddMount()
     {
+        IsAppDataPanelVisible = false;
         MountName = string.Empty;
         ProviderKind = "Azure Blob";
         Endpoint = string.Empty;
@@ -111,6 +158,364 @@ public partial class MainViewModel : ViewModelBase
 
     [RelayCommand]
     private void ToggleSubtitleMenu() => IsSubtitleMenuOpen = !IsSubtitleMenuOpen;
+
+    [RelayCommand]
+    private void TogglePlaylistPanel() => IsPlaylistPanelVisible = !IsPlaylistPanelVisible;
+
+    [RelayCommand]
+    private void ToggleAppDataPanel()
+    {
+        IsMountEditorVisible = false;
+        IsAppDataPanelVisible = !IsAppDataPanelVisible;
+    }
+
+    [RelayCommand]
+    private async Task SaveAppDataSettingsAsync()
+    {
+        if (AppDataMount is null)
+        {
+            Status = "Choose the mount that will store app data.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(AppDataPassphrase))
+        {
+            Status = "Enter the encryption passphrase.";
+            return;
+        }
+        try
+        {
+            await SaveStateAsync(sync: false);
+            await PushAppDataAsync(saveLocalFirst: false);
+            Status = $"Encrypted app data saved to {AppDataMount.Name}.";
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task PullAppDataAsync()
+    {
+        if (AppDataMount is null || string.IsNullOrWhiteSpace(AppDataPassphrase))
+        {
+            Status = "Choose the app-data mount and enter its passphrase.";
+            return;
+        }
+
+        try
+        {
+            var provider = CreateProvider(AppDataMount) as IWritableAppDataProvider
+                ?? throw new InvalidOperationException("The selected provider cannot store app data.");
+            var envelope = await provider.ReadTextAsync(AppDataPath.Trim('/'));
+            if (string.IsNullOrWhiteSpace(envelope))
+            {
+                Status = "No synchronized app data exists at that path.";
+                return;
+            }
+
+            var plaintext = await PlatformServices.StateProtector.DecryptAsync(envelope, AppDataPassphrase);
+            var synced = AppStateSerializer.FromJson(plaintext);
+            var localMounts = Mounts.ToDictionary(item => item.Id);
+            var mergedMounts = synced.Mounts
+                .Select(item => localMounts.TryGetValue(item.Id, out var local)
+                    ? item with
+                    {
+                        Credential = string.IsNullOrWhiteSpace(local.Credential)
+                            ? item.Credential
+                            : local.Credential,
+                        Endpoint = local.Endpoint.Contains('?')
+                            ? local.Endpoint
+                            : item.Endpoint
+                    }
+                    : item)
+                .Concat(Mounts.Where(local => synced.Mounts.All(remote => remote.Id != local.Id)))
+                .ToList();
+            var mergedPlaylists = MergePlaylists(synced.Playlists, Playlists);
+            var mergedOffline = synced.OfflineMedia
+                .Concat(OfflineFiles)
+                .GroupBy(item => (item.MountId, item.Path))
+                .Select(group => group.OrderByDescending(item => item.DownloadedAt).First())
+                .ToList();
+
+            Mounts.Clear();
+            Playlists.Clear();
+            OfflineFiles.Clear();
+            foreach (var mount in mergedMounts) Mounts.Add(mount);
+            foreach (var playlist in mergedPlaylists) Playlists.Add(playlist);
+            if (!Playlists.Any(item => item.Kind == PlaylistKind.History))
+            {
+                Playlists.Add(AppState.CreateHistoryPlaylist());
+            }
+            foreach (var offline in mergedOffline) OfflineFiles.Add(offline);
+            SelectedPlaylist = Playlists.FirstOrDefault(item => !item.IsAutomatic);
+            await SaveStateAsync(sync: false);
+            ShowMountRoot();
+            Status = "Encrypted app data downloaded and merged.";
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    private async Task PushAppDataAsync(bool saveLocalFirst)
+    {
+        if (AppDataMount is null || string.IsNullOrWhiteSpace(AppDataPassphrase)) return;
+        if (saveLocalFirst) await SaveStateAsync(sync: false);
+
+        var provider = CreateProvider(AppDataMount) as IWritableAppDataProvider
+            ?? throw new InvalidOperationException("The selected provider cannot store app data.");
+        var cloudMounts = _appState.Mounts
+            .Select(item => item.Id == AppDataMount.Id
+                ? item with
+                {
+                    Credential = string.Empty,
+                    Endpoint = RemoveQuery(item.Endpoint)
+                }
+                : item)
+            .ToList();
+        var cloudState = _appState with { Mounts = cloudMounts };
+        var plaintext = AppStateSerializer.ToJson(cloudState);
+        var envelope = await PlatformServices.StateProtector.EncryptAsync(plaintext, AppDataPassphrase);
+        await provider.WriteTextAsync(AppDataPath.Trim('/'), envelope);
+    }
+
+    [RelayCommand]
+    private void ShowOffline()
+    {
+        _provider = null;
+        _activeMount = null;
+        _currentPlaylist = null;
+        IsOfflineView = true;
+        IsPlaylistView = false;
+        CurrentLocation = "Offline";
+        Items.Clear();
+        foreach (var entry in OfflineFiles.OrderBy(item => Path.GetFileName(item.Path), StringComparer.OrdinalIgnoreCase))
+        {
+            Items.Add(CreateVirtualMediaItem(
+                "offline",
+                entry.MountId,
+                entry.Path,
+                Path.GetFileName(entry.Path),
+                entry.SizeBytes));
+        }
+        SelectedItem = null;
+        Status = $"{OfflineFiles.Count} offline file{(OfflineFiles.Count == 1 ? string.Empty : "s")}.";
+        _ = RefreshOfflineStorageAsync();
+    }
+
+    [RelayCommand]
+    private void ShowPlaylists()
+    {
+        _provider = null;
+        _activeMount = null;
+        _currentPlaylist = null;
+        IsOfflineView = false;
+        IsPlaylistView = true;
+        CurrentLocation = "Playlists";
+        Items.Clear();
+        foreach (var playlist in Playlists.OrderBy(item => item.IsAutomatic ? 0 : 1).ThenBy(item => item.Name))
+        {
+            Items.Add(new MediaItem(
+                playlist.Id,
+                playlist.Name,
+                true,
+                Metadata: new Dictionary<string, string>
+                {
+                    [EntryKindKey] = "playlist",
+                    [PlaylistIdKey] = playlist.Id
+                }));
+        }
+        SelectedItem = null;
+        Status = $"{Playlists.Count} playlist{(Playlists.Count == 1 ? string.Empty : "s")}.";
+    }
+
+    [RelayCommand]
+    private void ShowHistory()
+    {
+        var history = EnsureHistoryPlaylist();
+        ShowPlaylist(history);
+    }
+
+    [RelayCommand]
+    private void ShowMounts() => ShowMountRoot();
+
+    [RelayCommand]
+    private async Task CreatePlaylistAsync()
+    {
+        var name = NewPlaylistName.Trim();
+        if (name.Length == 0)
+        {
+            Status = "Enter a playlist name.";
+            return;
+        }
+        if (Playlists.Any(item => item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            Status = $"A playlist named '{name}' already exists.";
+            return;
+        }
+
+        var playlist = new Playlist { Name = name };
+        Playlists.Add(playlist);
+        SelectedPlaylist = playlist;
+        NewPlaylistName = string.Empty;
+        await SaveStateAsync();
+        ShowPlaylist(playlist);
+    }
+
+    [RelayCommand]
+    private async Task AddSelectedToPlaylistAsync()
+    {
+        if (SelectedPlaylist is null || SelectedItem is null || !MediaTypes.IsVideo(SelectedItem))
+        {
+            Status = "Select a video and playlist first.";
+            return;
+        }
+
+        var mountId = GetItemMountId(SelectedItem);
+        if (mountId is null)
+        {
+            Status = "The selected video is not associated with a mount.";
+            return;
+        }
+        if (PlaylistEndSeconds is not null
+            && PlaylistStartSeconds is not null
+            && PlaylistEndSeconds <= PlaylistStartSeconds)
+        {
+            Status = "Playlist end time must be after its start time.";
+            return;
+        }
+
+        SelectedPlaylist.Entries.Add(new PlaylistEntry
+        {
+            MountId = mountId,
+            Path = SelectedItem.Path,
+            Name = SelectedItem.Name,
+            StartSeconds = PlaylistStartSeconds,
+            EndSeconds = PlaylistEndSeconds,
+            AddedAt = DateTimeOffset.UtcNow
+        });
+        await SaveStateAsync();
+        if (SelectedPlaylist.KeepOffline)
+        {
+            await CachePlaylistEntryAsync(SelectedPlaylist.Entries[^1]);
+        }
+        Status = $"Added {SelectedItem.Name} to {SelectedPlaylist.Name}.";
+    }
+
+    [RelayCommand]
+    private async Task TogglePlaylistOfflineAsync()
+    {
+        if (SelectedPlaylist is null)
+        {
+            Status = "Select a playlist first.";
+            return;
+        }
+
+        try
+        {
+            var index = Playlists.IndexOf(SelectedPlaylist);
+            var updated = SelectedPlaylist with { KeepOffline = !SelectedPlaylist.KeepOffline };
+            Playlists[index] = updated;
+            SelectedPlaylist = updated;
+            await SaveStateAsync();
+            if (updated.KeepOffline)
+            {
+                foreach (var entry in updated.Entries)
+                {
+                    await CachePlaylistEntryAsync(entry);
+                }
+            }
+            Status = updated.KeepOffline
+                ? $"{updated.Name} is available offline."
+                : $"{updated.Name} is no longer pinned offline.";
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ClearCurrentPlaylistAsync()
+    {
+        if (_currentPlaylist is null)
+        {
+            Status = "Open a playlist first.";
+            return;
+        }
+        _currentPlaylist.Entries.Clear();
+        await SaveStateAsync();
+        ShowPlaylist(_currentPlaylist);
+        Status = $"Cleared {_currentPlaylist.Name}.";
+    }
+
+    [RelayCommand]
+    private async Task DeleteSelectedPlaylistAsync()
+    {
+        if (SelectedPlaylist is null || SelectedPlaylist.IsAutomatic)
+        {
+            Status = "Automatic playlists can be cleared but not deleted.";
+            return;
+        }
+        Playlists.Remove(SelectedPlaylist);
+        _currentPlaylist = null;
+        SelectedPlaylist = Playlists.FirstOrDefault(item => !item.IsAutomatic);
+        await SaveStateAsync();
+        ShowPlaylists();
+    }
+
+    [RelayCommand]
+    private async Task RemoveSelectedPlaylistEntryAsync()
+    {
+        if (_currentPlaylist is null || SelectedItem is null) return;
+        var entry = _currentPlaylist.Entries.FirstOrDefault(item =>
+            item.MountId == GetItemMountId(SelectedItem) && item.Path == SelectedItem.Path);
+        if (entry is null) return;
+        _currentPlaylist.Entries.Remove(entry);
+        await SaveStateAsync();
+        ShowPlaylist(_currentPlaylist);
+    }
+
+    [RelayCommand]
+    private async Task KeepSelectedOfflineAsync()
+    {
+        if (SelectedItem is null || !MediaTypes.IsVideo(SelectedItem))
+        {
+            Status = "Select a video first.";
+            return;
+        }
+        try
+        {
+            await CacheMediaItemAsync(SelectedItem);
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task RemoveSelectedOfflineAsync()
+    {
+        if (SelectedItem is null) return;
+        var mountId = GetItemMountId(SelectedItem);
+        if (mountId is null) return;
+        var key = GetOfflineKey(mountId, SelectedItem.Path);
+        try
+        {
+            await PlatformServices.Offline.RemoveAsync(key);
+            var metadata = OfflineFiles.FirstOrDefault(item => item.MountId == mountId && item.Path == SelectedItem.Path);
+            if (metadata is not null) OfflineFiles.Remove(metadata);
+            await SaveStateAsync();
+            ShowOffline();
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
 
     [RelayCommand]
     private async Task SaveMountAsync()
@@ -149,6 +554,8 @@ public partial class MainViewModel : ViewModelBase
     {
         var mountId = _activeMount?.Id;
         if (mountId is null
+            && CurrentLocation == "Mounts"
+            && SelectedItem?.Metadata?.ContainsKey(EntryKindKey) != true
             && SelectedItem?.Metadata?.TryGetValue(MountIdKey, out var selectedMountId) == true)
         {
             mountId = selectedMountId;
@@ -163,6 +570,11 @@ public partial class MainViewModel : ViewModelBase
 
         await RunUiOperationAsync(async () =>
         {
+            if (AppDataMount?.Id == mount.Id)
+            {
+                AppDataMount = null;
+                AppDataPassphrase = string.Empty;
+            }
             await SaveMountsAsync(Mounts.Where(candidate => candidate.Id != mount.Id));
             Mounts.Remove(mount);
             _provider = null;
@@ -198,6 +610,22 @@ public partial class MainViewModel : ViewModelBase
             return;
         }
 
+        if (SelectedItem.Metadata?.TryGetValue(EntryKindKey, out var kind) == true)
+        {
+            if (kind == "playlist"
+                && SelectedItem.Metadata.TryGetValue(PlaylistIdKey, out var playlistId))
+            {
+                var playlist = Playlists.First(item => item.Id == playlistId);
+                ShowPlaylist(playlist);
+                return;
+            }
+            if (kind is "playlistItem" or "offline")
+            {
+                await PlayAsync();
+                return;
+            }
+        }
+
         if (_activeMount is null)
         {
             if (SelectedItem.Metadata?.TryGetValue(MountIdKey, out var mountId) == true)
@@ -231,6 +659,7 @@ public partial class MainViewModel : ViewModelBase
         {
             if (_activeMount is null)
             {
+                if (CurrentLocation != "Mounts") ShowMountRoot();
                 return;
             }
 
@@ -248,38 +677,68 @@ public partial class MainViewModel : ViewModelBase
     [RelayCommand]
     private async Task PlayAsync()
     {
-        if (_provider is null || SelectedItem is null || !MediaTypes.IsVideo(SelectedItem))
+        if (SelectedItem is null || !MediaTypes.IsVideo(SelectedItem))
         {
             Status = "Select a video inside a mount first.";
             return;
         }
 
         var requestId = Interlocked.Increment(ref _playbackRequestId);
-        var video = SelectedItem;
-        if (_playingVideo is not null && !_playingVideo.Path.Equals(video.Path, StringComparison.Ordinal))
+        var selected = SelectedItem;
+        var mountId = GetItemMountId(selected);
+        var mount = Mounts.FirstOrDefault(item => item.Id == mountId);
+        if (mount is null)
         {
-            Interlocked.Increment(ref _subtitleRequestId);
-            SelectedSubtitle = null;
-            _localSubtitle = null;
-            SelectedSubtitleLabel = "Auto-detect adjacent or embedded subtitles";
+            Status = "The selected video mount is unavailable.";
+            return;
         }
-        _playingVideo = null;
         IsBusy = true;
-        Status = $"Loading {video.Name}…";
+        Status = $"Loading {selected.Name}…";
         try
         {
+            var provider = _activeMount?.Id == mount.Id && _provider is not null
+                ? _provider
+                : CreateProvider(mount);
+            var offlineUri = await PlatformServices.Offline.ResolveAsync(GetOfflineKey(mount.Id, selected.Path));
+            var video = selected.Metadata?.ContainsKey(EntryKindKey) == true && offlineUri is null
+                ? await ResolveProviderItemAsync(provider, selected.Path)
+                : selected;
+            if (_playingVideo is not null && !_playingVideo.Path.Equals(video.Path, StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _subtitleRequestId);
+                SelectedSubtitle = null;
+                _localSubtitle = null;
+                SelectedSubtitleLabel = "Auto-detect adjacent or embedded subtitles";
+            }
+            _playingVideo = null;
             await PlatformServices.Playback.StopAndShowLoadingAsync(video.Name);
-            var content = await _provider.GetContentAsync(video);
+            var content = offlineUri is null
+                ? await provider.GetContentAsync(video)
+                : new MediaContent(offlineUri, video.ContentType, video.Size);
             if (requestId != _playbackRequestId) return;
 
-            var plan = PlaybackPlanner.Create(video, content, Items);
-            var subtitle = await GetSubtitleWebVttAsync(video);
+            var siblings = offlineUri is not null && selected.Metadata?.ContainsKey(EntryKindKey) == true
+                ? []
+                : _activeMount?.Id == mount.Id
+                ? Items.ToArray()
+                : await provider.ListAsync(GetParentPath(video.Path));
+            var plan = PlaybackPlanner.Create(video, content, siblings);
+            var subtitle = await GetSubtitleWebVttAsync(video, provider, siblings);
             if (requestId != _playbackRequestId) return;
 
-            await PlatformServices.Playback.PlayAsync(plan, subtitle, SubtitleOffsetMilliseconds);
+            var startSeconds = GetOptionalDouble(selected, StartSecondsKey);
+            var endSeconds = GetOptionalDouble(selected, EndSecondsKey);
+            await PlatformServices.Playback.PlayAsync(
+                plan,
+                subtitle,
+                SubtitleOffsetMilliseconds,
+                startSeconds,
+                endSeconds);
             if (requestId != _playbackRequestId) return;
 
             _playingVideo = video;
+            AddHistoryEntry(mount.Id, video, startSeconds, endSeconds);
+            await SaveStateAsync();
             Status = plan.Mode == PlaybackMode.Direct
                 ? $"Playing {video.Name}."
                 : $"Playing {video.Name} with ffmpeg.wasm.";
@@ -338,14 +797,31 @@ public partial class MainViewModel : ViewModelBase
             var json = await PlatformServices.Mounts.LoadAsync();
             if (!string.IsNullOrWhiteSpace(json))
             {
-                var mounts = JsonSerializer.Deserialize(json, MountJsonContext.Default.ListMountDefinition) ?? [];
-                foreach (var mount in mounts)
+                try
                 {
-                    Mounts.Add(mount);
+                    _appState = AppStateSerializer.FromJson(json);
+                }
+                catch (JsonException)
+                {
+                    _appState = new AppState
+                    {
+                        Mounts = JsonSerializer.Deserialize(json, MountJsonContext.Default.ListMountDefinition) ?? []
+                    };
                 }
             }
 
+            if (!_appState.Playlists.Any(item => item.Kind == PlaylistKind.History))
+            {
+                _appState.Playlists.Add(AppState.CreateHistoryPlaylist());
+            }
+            foreach (var mount in _appState.Mounts) Mounts.Add(mount);
+            foreach (var playlist in _appState.Playlists) Playlists.Add(playlist);
+            foreach (var offline in _appState.OfflineMedia) OfflineFiles.Add(offline);
+            AppDataPath = _appState.AppDataSync.BlobPath;
+            AppDataMount = Mounts.FirstOrDefault(item => item.Id == _appState.AppDataSync.BootstrapMountId);
+            SelectedPlaylist = Playlists.FirstOrDefault(item => !item.IsAutomatic);
             ShowMountRoot();
+            await RefreshOfflineStorageAsync();
             Status = Mounts.Count == 0
                 ? "Use File → Add storage mount to get started."
                 : $"{Mounts.Count} mount{(Mounts.Count == 1 ? string.Empty : "s")}.";
@@ -396,10 +872,230 @@ public partial class MainViewModel : ViewModelBase
         };
     }
 
+    private void ShowPlaylist(Playlist playlist)
+    {
+        _provider = null;
+        _activeMount = null;
+        _currentPlaylist = playlist;
+        IsOfflineView = false;
+        IsPlaylistView = true;
+        SelectedPlaylist = playlist;
+        CurrentLocation = playlist.IsAutomatic ? $"Auto playlist · {playlist.Name}" : $"Playlist · {playlist.Name}";
+        Items.Clear();
+        foreach (var entry in playlist.Entries)
+        {
+            var mount = Mounts.FirstOrDefault(item => item.Id == entry.MountId);
+            Items.Add(CreateVirtualMediaItem(
+                "playlistItem",
+                entry.MountId,
+                entry.Path,
+                entry.Name,
+                metadata: new Dictionary<string, string>
+                {
+                    [PlaylistIdKey] = playlist.Id,
+                    [StartSecondsKey] = entry.StartSeconds?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+                    [EndSecondsKey] = entry.EndSeconds?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+                    ["mountName"] = mount?.Name ?? "Missing mount"
+                }));
+        }
+        SelectedItem = null;
+        Status = $"{playlist.Entries.Count} item{(playlist.Entries.Count == 1 ? string.Empty : "s")}.";
+    }
+
+    private Playlist EnsureHistoryPlaylist()
+    {
+        var history = Playlists.FirstOrDefault(item => item.Kind == PlaylistKind.History);
+        if (history is not null) return history;
+        history = AppState.CreateHistoryPlaylist();
+        Playlists.Insert(0, history);
+        return history;
+    }
+
+    private void AddHistoryEntry(
+        string mountId,
+        MediaItem video,
+        double? startSeconds,
+        double? endSeconds)
+    {
+        var history = EnsureHistoryPlaylist();
+        history.Entries.Insert(0, new PlaylistEntry
+        {
+            MountId = mountId,
+            Path = video.Path,
+            Name = video.Name,
+            StartSeconds = startSeconds,
+            EndSeconds = endSeconds,
+            AddedAt = DateTimeOffset.UtcNow
+        });
+        const int historyLimit = 250;
+        if (history.Entries.Count > historyLimit)
+        {
+            history.Entries.RemoveRange(historyLimit, history.Entries.Count - historyLimit);
+        }
+    }
+
+    private async Task CacheMediaItemAsync(MediaItem item)
+    {
+        var mountId = GetItemMountId(item);
+        var mount = Mounts.FirstOrDefault(value => value.Id == mountId)
+            ?? throw new InvalidOperationException("The selected video's mount is unavailable.");
+        var provider = _activeMount?.Id == mount.Id && _provider is not null
+            ? _provider
+            : CreateProvider(mount);
+        var key = GetOfflineKey(mount.Id, item.Path);
+        if (OfflineFiles.Any(value => value.MountId == mount.Id && value.Path == item.Path)
+            && await PlatformServices.Offline.ResolveAsync(key) is not null)
+        {
+            return;
+        }
+        var resolved = item.Metadata?.ContainsKey(EntryKindKey) == true
+            ? await ResolveProviderItemAsync(provider, item.Path)
+            : item;
+        Status = $"Downloading {resolved.Name} for offline use…";
+        var content = await provider.GetContentAsync(resolved);
+        key = GetOfflineKey(mount.Id, resolved.Path);
+        await PlatformServices.Offline.CacheAsync(
+            key,
+            content.Uri,
+            mount.ProviderKind is "Azure Blob" or "Azure Files"
+            && LooksLikeAccessToken(mount.Credential)
+                ? mount.Credential
+                : null);
+
+        var old = OfflineFiles.FirstOrDefault(value => value.MountId == mount.Id && value.Path == resolved.Path);
+        if (old is not null) OfflineFiles.Remove(old);
+        OfflineFiles.Add(new OfflineMediaMetadata
+        {
+            MountId = mount.Id,
+            Path = resolved.Path,
+            SizeBytes = resolved.Size,
+            DownloadedAt = DateTimeOffset.UtcNow,
+            LocalFileName = resolved.Name
+        });
+        await SaveStateAsync();
+        await RefreshOfflineStorageAsync();
+        Status = $"{resolved.Name} is available offline.";
+    }
+
+    private async Task CachePlaylistEntryAsync(PlaylistEntry entry)
+    {
+        var item = CreateVirtualMediaItem(
+            "playlistItem",
+            entry.MountId,
+            entry.Path,
+            entry.Name,
+            metadata: new Dictionary<string, string>());
+        await CacheMediaItemAsync(item);
+    }
+
+    private async Task<MediaItem> ResolveProviderItemAsync(IMediaProvider provider, string path)
+    {
+        var siblings = await provider.ListAsync(GetParentPath(path));
+        return siblings.FirstOrDefault(item => item.Path.Equals(path, StringComparison.OrdinalIgnoreCase))
+            ?? throw new FileNotFoundException($"'{path}' no longer exists in its provider.");
+    }
+
+    private async Task RefreshOfflineStorageAsync()
+    {
+        var estimate = await PlatformServices.Offline.EstimateAsync();
+        OfflineStorageLabel =
+            $"{FormatBytes(estimate.Usage)} used · {FormatBytes(Math.Max(0, estimate.Quota - estimate.Usage))} available";
+    }
+
+    private static MediaItem CreateVirtualMediaItem(
+        string kind,
+        string mountId,
+        string path,
+        string name,
+        long? size = null,
+        IReadOnlyDictionary<string, string>? metadata = null)
+    {
+        var values = new Dictionary<string, string>(metadata ?? new Dictionary<string, string>())
+        {
+            [EntryKindKey] = kind,
+            [MountIdKey] = mountId
+        };
+        return new MediaItem(path, name, false, size, Metadata: values);
+    }
+
+    private string? GetItemMountId(MediaItem item) =>
+        item.Metadata?.TryGetValue(MountIdKey, out var mountId) == true
+            ? mountId
+            : _activeMount?.Id;
+
+    private static double? GetOptionalDouble(MediaItem item, string key) =>
+        item.Metadata?.TryGetValue(key, out var value) == true
+        && double.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : null;
+
+    private static string GetParentPath(string path) =>
+        Path.GetDirectoryName(path)?.Replace('\\', '/') ?? string.Empty;
+
+    private static string GetOfflineKey(string mountId, string path) => $"{mountId}|{path}";
+
+    private static string RemoveQuery(string endpoint)
+    {
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)) return endpoint;
+        return new UriBuilder(uri) { Query = string.Empty }.Uri.ToString();
+    }
+
+    private static IReadOnlyList<Playlist> MergePlaylists(
+        IEnumerable<Playlist> remote,
+        IEnumerable<Playlist> local)
+    {
+        var result = remote.ToDictionary(item => item.Id);
+        foreach (var localPlaylist in local)
+        {
+            if (!result.TryGetValue(localPlaylist.Id, out var remotePlaylist))
+            {
+                result[localPlaylist.Id] = localPlaylist;
+                continue;
+            }
+
+            var entries = remotePlaylist.Entries
+                .Concat(localPlaylist.Entries)
+                .GroupBy(item => (
+                    item.MountId,
+                    item.Path,
+                    item.StartSeconds,
+                    item.EndSeconds))
+                .Select(group => group.First())
+                .ToList();
+            if (remotePlaylist.Kind == PlaylistKind.History)
+            {
+                entries = entries
+                    .OrderByDescending(item => item.AddedAt ?? DateTimeOffset.MinValue)
+                    .ToList();
+            }
+            result[localPlaylist.Id] = remotePlaylist with
+            {
+                KeepOffline = remotePlaylist.KeepOffline || localPlaylist.KeepOffline,
+                Entries = entries
+            };
+        }
+        return result.Values.ToArray();
+    }
+
+    private static string FormatBytes(long value)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        var size = (double)value;
+        var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+        return $"{size:0.##} {units[unit]}";
+    }
+
     private void ShowMountRoot()
     {
         _provider = null;
         _activeMount = null;
+        IsOfflineView = false;
+        IsPlaylistView = false;
         CurrentPath = string.Empty;
         CurrentLocation = "Mounts";
         Items.Clear();
@@ -421,6 +1117,8 @@ public partial class MainViewModel : ViewModelBase
 
     private async Task LoadCurrentPathAsync()
     {
+        IsOfflineView = false;
+        IsPlaylistView = false;
         var loaded = await _provider!.ListAsync(CurrentPath);
         Items.Clear();
         foreach (var item in loaded)
@@ -437,8 +1135,31 @@ public partial class MainViewModel : ViewModelBase
 
     private async Task SaveMountsAsync(IEnumerable<MountDefinition> mounts)
     {
-        var json = JsonSerializer.Serialize(mounts.ToList(), MountJsonContext.Default.ListMountDefinition);
-        await PlatformServices.Mounts.SaveAsync(json);
+        await SaveStateAsync(mounts);
+    }
+
+    private async Task SaveStateAsync(IEnumerable<MountDefinition>? mounts = null, bool sync = true)
+    {
+        _appState = new AppState
+        {
+            Mounts = (mounts ?? Mounts).ToList(),
+            Playlists = Playlists.ToList(),
+            OfflineMedia = OfflineFiles.ToList(),
+            AppDataSync = new AppDataSyncSettings
+            {
+                BootstrapMountId = AppDataMount?.Id,
+                BlobPath = string.IsNullOrWhiteSpace(AppDataPath)
+                    ? ".medius-app-state.json.enc"
+                    : AppDataPath.Trim('/')
+            }
+        };
+        await PlatformServices.Mounts.SaveAsync(AppStateSerializer.ToJson(_appState));
+        if (sync
+            && AppDataMount is not null
+            && !string.IsNullOrWhiteSpace(AppDataPassphrase))
+        {
+            await PushAppDataAsync(saveLocalFirst: false);
+        }
     }
 
     private async Task ApplyCloudSubtitleAsync(MediaItem subtitle)
@@ -465,7 +1186,10 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
-    private async Task<string?> GetSubtitleWebVttAsync(MediaItem video)
+    private async Task<string?> GetSubtitleWebVttAsync(
+        MediaItem video,
+        IMediaProvider provider,
+        IEnumerable<MediaItem> siblings)
     {
         if (_localSubtitle is not null)
         {
@@ -476,16 +1200,18 @@ public partial class MainViewModel : ViewModelBase
         }
 
         var subtitle = SelectedSubtitle
-            ?? SubtitleDiscovery.FindAdjacent(video, Items).FirstOrDefault();
+            ?? SubtitleDiscovery.FindAdjacent(video, siblings).FirstOrDefault();
         if (subtitle is null) return null;
 
         SelectedSubtitleLabel = subtitle.Name;
-        return await ReadSubtitleWebVttAsync(subtitle);
+        return await ReadSubtitleWebVttAsync(subtitle, provider);
     }
 
-    private async Task<string> ReadSubtitleWebVttAsync(MediaItem subtitle)
+    private async Task<string> ReadSubtitleWebVttAsync(
+        MediaItem subtitle,
+        IMediaProvider? provider = null)
     {
-        await using var stream = await _provider!.OpenReadAsync(subtitle);
+        await using var stream = await (provider ?? _provider!).OpenReadAsync(subtitle);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         var content = await reader.ReadToEndAsync();
         return SubtitleConverter.ToWebVtt(

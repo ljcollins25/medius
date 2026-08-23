@@ -9,6 +9,10 @@ public static class PlatformServices
     public static IWebAuthenticationHost Authentication { get; set; } = new UnsupportedAuthenticationHost();
 
     public static IMountStore Mounts { get; set; } = new MemoryMountStore();
+
+    public static IOfflineMediaStore Offline { get; set; } = new UnsupportedOfflineMediaStore();
+
+    public static IAppStateProtector StateProtector { get; set; } = new DotNetAppStateProtector();
 }
 
 public interface IPlaybackHost
@@ -19,6 +23,8 @@ public interface IPlaybackHost
         PlaybackPlan plan,
         string? subtitleWebVtt,
         double embeddedSubtitleOffsetMilliseconds,
+        double? startSeconds = null,
+        double? endSeconds = null,
         CancellationToken cancellationToken = default);
 
     Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default);
@@ -49,6 +55,30 @@ public interface IMountStore
     Task SaveAsync(string json, CancellationToken cancellationToken = default);
 }
 
+public sealed record OfflineStorageEstimate(long Usage, long Quota);
+
+public interface IOfflineMediaStore
+{
+    Task CacheAsync(
+        string key,
+        Uri source,
+        string? bearerToken = null,
+        CancellationToken cancellationToken = default);
+
+    Task<Uri?> ResolveAsync(string key, CancellationToken cancellationToken = default);
+
+    Task<bool> RemoveAsync(string key, CancellationToken cancellationToken = default);
+
+    Task<OfflineStorageEstimate> EstimateAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IAppStateProtector
+{
+    Task<string> EncryptAsync(string plaintextJson, string passphrase);
+
+    Task<string> DecryptAsync(string envelopeJson, string passphrase);
+}
+
 internal sealed class UnsupportedPlaybackHost : IPlaybackHost
 {
     public Task StopAndShowLoadingAsync(string fileName, CancellationToken cancellationToken = default) =>
@@ -58,6 +88,8 @@ internal sealed class UnsupportedPlaybackHost : IPlaybackHost
         PlaybackPlan plan,
         string? subtitleWebVtt,
         double embeddedSubtitleOffsetMilliseconds,
+        double? startSeconds = null,
+        double? endSeconds = null,
         CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("HTML5 playback is available in the browser head.");
 
@@ -95,4 +127,32 @@ internal sealed class MemoryMountStore : IMountStore
         _json = json;
         return Task.CompletedTask;
     }
+}
+
+internal sealed class UnsupportedOfflineMediaStore : IOfflineMediaStore
+{
+    public Task CacheAsync(
+        string key,
+        Uri source,
+        string? bearerToken = null,
+        CancellationToken cancellationToken = default) =>
+        throw new PlatformNotSupportedException("Offline media storage is not configured.");
+
+    public Task<Uri?> ResolveAsync(string key, CancellationToken cancellationToken = default) =>
+        Task.FromResult<Uri?>(null);
+
+    public Task<bool> RemoveAsync(string key, CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
+
+    public Task<OfflineStorageEstimate> EstimateAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(new OfflineStorageEstimate(0, 0));
+}
+
+internal sealed class DotNetAppStateProtector : IAppStateProtector
+{
+    public Task<string> EncryptAsync(string plaintextJson, string passphrase) =>
+        Task.FromResult(AppStateCrypto.Encrypt(plaintextJson, passphrase));
+
+    public Task<string> DecryptAsync(string envelopeJson, string passphrase) =>
+        Task.FromResult(AppStateCrypto.Decrypt(envelopeJson, passphrase));
 }
