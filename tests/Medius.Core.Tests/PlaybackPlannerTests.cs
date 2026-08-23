@@ -6,7 +6,7 @@ public sealed class PlaybackPlannerTests
 {
     [Theory]
     [InlineData("movie.mp4", PlaybackMode.Direct)]
-    [InlineData("movie.mkv", PlaybackMode.Remux)]
+    [InlineData("movie.mkv", PlaybackMode.Transcode)]
     [InlineData("movie.avi", PlaybackMode.Transcode)]
     public void SelectsExpectedPlaybackMode(string name, PlaybackMode expected)
     {

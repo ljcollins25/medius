@@ -4,6 +4,7 @@ import { fetchFile } from "@ffmpeg/util";
 let ffmpeg;
 let mediaObjectUrl;
 let subtitleObjectUrl;
+const ffmpegLog = [];
 
 const video = () => document.getElementById("media-player");
 const status = () => document.getElementById("player-status");
@@ -106,7 +107,17 @@ export async function acquireToken(tenantId, clientId, scopes) {
 async function convertForBrowser(uri, fileName, mode) {
     ffmpeg ??= new FFmpeg();
     if (!ffmpeg.loaded) {
+        ffmpeg.on("log", ({ message }) => {
+            ffmpegLog.push(message);
+            if (ffmpegLog.length > 20) ffmpegLog.shift();
+        });
+        ffmpeg.on("progress", ({ progress }) => {
+            if (Number.isFinite(progress)) {
+                status().textContent = `Converting locally… ${Math.max(0, Math.min(100, Math.round(progress * 100)))}%`;
+            }
+        });
         await ffmpeg.load({
+            classWorkerURL: new URL("./ffmpeg/worker.js", import.meta.url).href,
             coreURL: new URL("./ffmpeg/ffmpeg-core.js", import.meta.url).href,
             wasmURL: new URL("./ffmpeg/ffmpeg-core.wasm", import.meta.url).href
         });
@@ -115,11 +126,17 @@ async function convertForBrowser(uri, fileName, mode) {
     const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ".bin";
     const inputName = `input${extension}`;
     const outputName = "output.mp4";
+    ffmpegLog.length = 0;
+    await Promise.allSettled([
+        ffmpeg.deleteFile(inputName),
+        ffmpeg.deleteFile(outputName),
+        ffmpeg.deleteFile("embedded.vtt")
+    ]);
     await ffmpeg.writeFile(inputName, await fetchFile(uri));
 
     let extractedSubtitle;
     try {
-        await ffmpeg.exec(["-i", inputName, "-map", "0:s:0", "-c:s", "webvtt", "embedded.vtt"]);
+        await ffmpeg.exec(["-y", "-i", inputName, "-map", "0:s:0", "-c:s", "webvtt", "embedded.vtt"]);
         extractedSubtitle = new TextDecoder().decode(await ffmpeg.readFile("embedded.vtt"));
     } catch {
         // A media file is not required to contain a subtitle stream.
@@ -128,6 +145,7 @@ async function convertForBrowser(uri, fileName, mode) {
     let exitCode = -1;
     if (conversionStrategy(mode) === "remux") {
         exitCode = await ffmpeg.exec([
+            "-y",
             "-i", inputName,
             "-map", "0:v:0",
             "-map", "0:a:0?",
@@ -138,6 +156,7 @@ async function convertForBrowser(uri, fileName, mode) {
     }
     if (mode === "Transcode" || exitCode !== 0) {
         exitCode = await ffmpeg.exec([
+            "-y",
             "-i", inputName,
             "-map", "0:v:0",
             "-map", "0:a:0?",
@@ -149,7 +168,7 @@ async function convertForBrowser(uri, fileName, mode) {
         ]);
     }
     if (exitCode !== 0) {
-        throw new Error("ffmpeg.wasm could not convert this media file.");
+        throw new Error(`ffmpeg.wasm could not convert this media file.\n${ffmpegLog.slice(-5).join("\n")}`);
     }
 
     const data = await ffmpeg.readFile(outputName);

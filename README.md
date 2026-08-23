@@ -9,7 +9,7 @@ Medius is a C# file browser and local-first media player. The UI is shared Avalo
 - OneDrive via Microsoft Graph OAuth
 - Hierarchical folder browsing and configurable provider root
 - Direct MP4/M4V/WebM playback
-- Local ffmpeg.wasm MKV/MOV/TS remuxing, fallback transcoding, and first embedded subtitle extraction
+- Local ffmpeg.wasm AVI/MKV transcoding, MOV/TS remuxing with fallback transcoding, and first embedded subtitle extraction
 - Adjacent `.vtt`, `.srt`, `.ass`, `.ssa`, and `.sub` discovery using names such as `Movie.en.srt`
 - Explicit local or cloud subtitle selection
 - Positive and negative subtitle offsets; SRT and VTT are converted to WebVTT before playback

@@ -21,7 +21,7 @@ public static class PlaybackPlanner
         StringComparer.OrdinalIgnoreCase);
 
     private static readonly HashSet<string> RemuxExtensions = new(
-        [".mkv", ".mov", ".ts", ".m2ts"],
+        [".mov", ".ts", ".m2ts"],
         StringComparer.OrdinalIgnoreCase);
 
     public static PlaybackPlan Create(

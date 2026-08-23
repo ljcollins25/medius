@@ -11,6 +11,15 @@ await build({
 });
 
 await mkdir("wwwroot/ffmpeg", { recursive: true });
+await build({
+    entryPoints: ["node_modules/@ffmpeg/ffmpeg/dist/esm/worker.js"],
+    outfile: "wwwroot/ffmpeg/worker.js",
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "es2022"
+});
+
 for (const file of ["ffmpeg-core.js", "ffmpeg-core.wasm"]) {
     await copyFile(`node_modules/@ffmpeg/core/dist/esm/${file}`, `wwwroot/ffmpeg/${file}`);
 }

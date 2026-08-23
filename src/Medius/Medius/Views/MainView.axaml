@@ -67,30 +67,29 @@
                     <Button Grid.Column="2" Content="Open" Command="{Binding OpenCommand}" />
                 </Grid>
 
-                <ListBox x:Name="ExplorerList"
-                         Grid.Row="3"
-                         MinHeight="320"
-                         ItemsSource="{Binding Items}"
-                         SelectedItem="{Binding SelectedItem}">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate x:DataType="core:MediaItem">
-                            <Button Click="OnItemClicked"
-                                    Padding="0"
-                                    BorderThickness="0"
-                                    Background="Transparent"
-                                    HorizontalContentAlignment="Stretch">
-                                <Grid ColumnDefinitions="28,*,Auto" Margin="4,7">
-                                    <TextBlock Grid.Column="0"
-                                               Text="{Binding IsDirectory, Converter={x:Static views:BoolConverters.FolderOrFile}}" />
-                                    <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Grid.Column="2"
-                                               Text="{Binding Size, Converter={x:Static views:SizeConverters.ByteSize}}"
-                                               Opacity="0.65" />
-                                </Grid>
-                            </Button>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
+                <Border Grid.Row="3" MinHeight="320" Background="#F2F2F2">
+                    <ItemsControl ItemsSource="{Binding Items}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="core:MediaItem">
+                                <Button Click="OnItemClicked"
+                                        Tag="{Binding}"
+                                        Padding="0"
+                                        BorderThickness="0"
+                                        Background="Transparent"
+                                        HorizontalContentAlignment="Stretch">
+                                    <Grid ColumnDefinitions="28,*,Auto" Margin="4,7">
+                                        <TextBlock Grid.Column="0"
+                                                   Text="{Binding IsDirectory, Converter={x:Static views:BoolConverters.FolderOrFile}}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding Size, Converter={x:Static views:SizeConverters.ByteSize}}"
+                                                   Opacity="0.65" />
+                                    </Grid>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
 
                 <Border Grid.Row="4" Padding="14" CornerRadius="10" Background="#151C2C">
                     <StackPanel Spacing="8">
