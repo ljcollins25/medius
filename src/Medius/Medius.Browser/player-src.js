@@ -9,6 +9,7 @@ const ffmpegLog = [];
 const video = () => document.getElementById("media-player");
 const status = () => document.getElementById("player-status");
 const mountsKey = "medius.mounts.v1";
+const ffmpegAssetVersion = "3";
 
 export function loadMounts() {
     return localStorage.getItem(mountsKey);
@@ -116,11 +117,32 @@ async function convertForBrowser(uri, fileName, mode) {
                 status().textContent = `Converting locally… ${Math.max(0, Math.min(100, Math.round(progress * 100)))}%`;
             }
         });
-        await ffmpeg.load({
-            classWorkerURL: new URL("./ffmpeg/worker.js", import.meta.url).href,
-            coreURL: new URL("./ffmpeg/ffmpeg-core.js", import.meta.url).href,
-            wasmURL: new URL("./ffmpeg/ffmpeg-core.wasm", import.meta.url).href
-        });
+        const assetUrl = path => {
+            const url = new URL(path, import.meta.url);
+            url.searchParams.set("v", ffmpegAssetVersion);
+            return url.href;
+        };
+        let timeoutId;
+        try {
+            await Promise.race([
+                ffmpeg.load({
+                    classWorkerURL: assetUrl("./ffmpeg/worker.js"),
+                    coreURL: assetUrl("./ffmpeg/ffmpeg-core.js"),
+                    wasmURL: assetUrl("./ffmpeg/ffmpeg-core.wasm")
+                }),
+                new Promise((_, reject) => {
+                    timeoutId = setTimeout(
+                        () => reject(new Error("ffmpeg.wasm did not load within 30 seconds. Refresh the page to clear stale cached assets.")),
+                        30000);
+                })
+            ]);
+        } catch (error) {
+            ffmpeg.terminate();
+            ffmpeg = undefined;
+            throw error;
+        } finally {
+            clearTimeout(timeoutId);
+        }
     }
 
     const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ".bin";
