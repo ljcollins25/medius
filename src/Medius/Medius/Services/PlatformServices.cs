@@ -13,6 +13,8 @@ public static class PlatformServices
     public static IOfflineMediaStore Offline { get; set; } = new UnsupportedOfflineMediaStore();
 
     public static IAppStateProtector StateProtector { get; set; } = new DotNetAppStateProtector();
+
+    public static IPortableAppDataHost PortableAppData { get; set; } = new UnsupportedPortableAppDataHost();
 }
 
 public interface IPlaybackHost
@@ -25,6 +27,9 @@ public interface IPlaybackHost
         double embeddedSubtitleOffsetMilliseconds,
         double? startSeconds = null,
         double? endSeconds = null,
+        string? mediaKey = null,
+        int maxWidth = 854,
+        long convertedCacheLimitBytes = 536870912,
         CancellationToken cancellationToken = default);
 
     Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default);
@@ -35,6 +40,10 @@ public interface IPlaybackHost
         CancellationToken cancellationToken = default);
 
     Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default);
+
+    Task ClearConvertedCacheAsync(CancellationToken cancellationToken = default);
+
+    Task<long> GetConvertedCacheUsageAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed record LocalSubtitle(string Name, string Content);
@@ -79,6 +88,19 @@ public interface IAppStateProtector
     Task<string> DecryptAsync(string envelopeJson, string passphrase);
 }
 
+public interface IPortableAppDataHost
+{
+    Task ExportFileAsync(string fileName, string content);
+
+    Task<string?> ImportFileAsync();
+
+    Task ShowQrAsync(string payload);
+
+    Task<string?> ScanQrCameraAsync();
+
+    Task<string?> ScanQrFileAsync();
+}
+
 internal sealed class UnsupportedPlaybackHost : IPlaybackHost
 {
     public Task StopAndShowLoadingAsync(string fileName, CancellationToken cancellationToken = default) =>
@@ -90,6 +112,9 @@ internal sealed class UnsupportedPlaybackHost : IPlaybackHost
         double embeddedSubtitleOffsetMilliseconds,
         double? startSeconds = null,
         double? endSeconds = null,
+        string? mediaKey = null,
+        int maxWidth = 854,
+        long convertedCacheLimitBytes = 536870912,
         CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("HTML5 playback is available in the browser head.");
 
@@ -104,6 +129,12 @@ internal sealed class UnsupportedPlaybackHost : IPlaybackHost
 
     public Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("Local subtitle selection is available in the browser head.");
+
+    public Task ClearConvertedCacheAsync(CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    public Task<long> GetConvertedCacheUsageAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(0L);
 }
 
 internal sealed class UnsupportedAuthenticationHost : IWebAuthenticationHost
@@ -155,4 +186,22 @@ internal sealed class DotNetAppStateProtector : IAppStateProtector
 
     public Task<string> DecryptAsync(string envelopeJson, string passphrase) =>
         Task.FromResult(AppStateCrypto.Decrypt(envelopeJson, passphrase));
+}
+
+internal sealed class UnsupportedPortableAppDataHost : IPortableAppDataHost
+{
+    public Task ExportFileAsync(string fileName, string content) =>
+        throw new PlatformNotSupportedException("Portable app-data export is unavailable.");
+
+    public Task<string?> ImportFileAsync() =>
+        throw new PlatformNotSupportedException("Portable app-data import is unavailable.");
+
+    public Task ShowQrAsync(string payload) =>
+        throw new PlatformNotSupportedException("QR display is unavailable.");
+
+    public Task<string?> ScanQrCameraAsync() =>
+        throw new PlatformNotSupportedException("QR camera scanning is unavailable.");
+
+    public Task<string?> ScanQrFileAsync() =>
+        throw new PlatformNotSupportedException("QR image scanning is unavailable.");
 }

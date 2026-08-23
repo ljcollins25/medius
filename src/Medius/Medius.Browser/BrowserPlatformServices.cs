@@ -21,6 +21,9 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         double embeddedSubtitleOffsetMilliseconds,
         double? startSeconds = null,
         double? endSeconds = null,
+        string? mediaKey = null,
+        int maxWidth = 854,
+        long convertedCacheLimitBytes = 536870912,
         CancellationToken cancellationToken = default) =>
         _ = await PlayVideoAsync(
             plan.Content.Uri.ToString(),
@@ -29,7 +32,10 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
             subtitleWebVtt,
             embeddedSubtitleOffsetMilliseconds,
             startSeconds ?? -1,
-            endSeconds ?? -1);
+            endSeconds ?? -1,
+            mediaKey,
+            maxWidth,
+            (double)convertedCacheLimitBytes);
 
     public async Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default)
     {
@@ -60,6 +66,12 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         return Task.CompletedTask;
     }
 
+    public async Task ClearConvertedCacheAsync(CancellationToken cancellationToken = default) =>
+        _ = await ClearConvertedCacheCoreAsync();
+
+    public async Task<long> GetConvertedCacheUsageAsync(CancellationToken cancellationToken = default) =>
+        (long)await GetConvertedCacheUsageCoreAsync();
+
     [JSImport("playVideo", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
     private static partial Task<bool> PlayVideoAsync(
@@ -69,7 +81,10 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         string? subtitleWebVtt,
         double embeddedSubtitleOffsetMilliseconds,
         double startSeconds,
-        double endSeconds);
+        double endSeconds,
+        string? mediaKey,
+        int maxWidth,
+        double convertedCacheLimitBytes);
 
     [JSImport("pickSubtitle", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.String>>]
@@ -83,6 +98,14 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
 
     [JSImport("setSubtitleStyle", "medius-player")]
     private static partial void SetSubtitleStyle(double fontSizePercent, double backgroundOpacity);
+
+    [JSImport("clearConvertedCache", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
+    private static partial Task<bool> ClearConvertedCacheCoreAsync();
+
+    [JSImport("getConvertedCacheUsage", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Number>>]
+    private static partial Task<double> GetConvertedCacheUsageCoreAsync();
 }
 
 [SupportedOSPlatform("browser")]
@@ -179,4 +202,42 @@ internal sealed partial class BrowserAppStateProtector : IAppStateProtector
     [JSImport("decryptAppState", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.String>>]
     private static partial Task<string> DecryptAppStateAsync(string envelopeJson, string passphrase);
+}
+
+[SupportedOSPlatform("browser")]
+internal sealed partial class BrowserPortableAppDataHost : IPortableAppDataHost
+{
+    public Task ExportFileAsync(string fileName, string content)
+    {
+        ExportAppDataFile(fileName, content);
+        return Task.CompletedTask;
+    }
+
+    public Task<string?> ImportFileAsync() => ImportAppDataFileAsync();
+
+    public async Task ShowQrAsync(string payload) =>
+        _ = await ShowSyncQrCoreAsync(payload);
+
+    public Task<string?> ScanQrCameraAsync() => ScanSyncQrCameraAsync();
+
+    public Task<string?> ScanQrFileAsync() => ScanSyncQrFileAsync();
+
+    [JSImport("exportAppDataFile", "medius-player")]
+    private static partial void ExportAppDataFile(string fileName, string content);
+
+    [JSImport("importAppDataFile", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string?> ImportAppDataFileAsync();
+
+    [JSImport("showSyncQr", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
+    private static partial Task<bool> ShowSyncQrCoreAsync(string payload);
+
+    [JSImport("scanSyncQrCamera", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string?> ScanSyncQrCameraAsync();
+
+    [JSImport("scanSyncQrFile", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string?> ScanSyncQrFileAsync();
 }

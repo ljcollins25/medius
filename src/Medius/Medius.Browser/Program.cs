@@ -16,6 +16,7 @@ internal sealed partial class Program
         PlatformServices.Mounts = new BrowserMountStore();
         PlatformServices.Offline = new BrowserOfflineMediaStore();
         PlatformServices.StateProtector = new BrowserAppStateProtector();
+        PlatformServices.PortableAppData = new BrowserPortableAppDataHost();
         await BuildAvaloniaApp()
             .WithInterFont()
             .StartBrowserAppAsync("out");

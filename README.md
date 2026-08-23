@@ -18,10 +18,12 @@ Medius is a C# file browser and local-first media player. The UI is shared Avalo
 - Optional Nexis-compatible Azure ghost hydration
 - Multiple named provider mounts shown at the explorer root
 - Browser Cache Storage and desktop local-disk original-file offline media
+- Configurable browser cache for converted fragments, with selectable original/1080p/720p/480p output
 - Installable/offline-capable browser shell with service-worker caching and Range responses
 - Custom playlists with optional start/end ranges and keep-offline pinning
 - Automatic History playlist with per-item removal and clearing
 - Encrypted app-state synchronization through a designated Azure Blob mount
+- Encrypted app-state file export/import and password-equivalent QR transfer from a camera or image
 - Browser `localStorage` and desktop local-disk app-state persistence
 
 ## Run
@@ -38,7 +40,7 @@ The generated ffmpeg bundle and single-threaded core are served locally from `ww
 
 Starting another video immediately pauses and clears the current player, cancels its ffmpeg worker, and displays a loading overlay while the replacement video hydrates or converts.
 
-The browser UI is mobile-first: the video player is placed above a touch-oriented library on narrow screens, while wider screens keep the library and player side-by-side. Click a media-type icon once to open/play/apply it, or double-click the rest of the row. Subtitle controls are kept in a collapsible menu.
+The browser UI is mobile-first: the video player is placed above a touch-oriented library on narrow screens, while wider screens keep the library and player side-by-side. Click a media-type icon once to open/play/apply it, or double-click the rest of the row. Use the row ellipsis, desktop right-click, or mobile press-and-hold for playlist and offline actions. Subtitle controls are kept in a collapsible menu.
 
 `wwwroot/harness.html` runs the player against local files in `wwwroot/testmedia/` without the Avalonia app or cloud storage, which is the quickest way to debug playback and seeking:
 
@@ -54,20 +56,22 @@ Use **••• → Add storage mount** to attach a provider. Each mount require
 
 Open **Playlists & offline** to:
 
-- Keep the selected original media file offline or remove its offline copy.
+- Keep an original media file offline or remove its offline copy from the item's action menu.
 - View all current offline files.
-- Create playlists and add a selected video with optional start/end seconds.
+- Create playlists and add a video from its action menu, with optional start/end seconds configured in this panel.
 - Pin a playlist so all its original files are downloaded for offline use.
 - Open or clear the automatic **History** playlist.
 - Remove individual playlist/history entries or delete custom playlists.
 
-The browser requests persistent Cache Storage, and a service worker caches the app shell plus media. Cached media is exposed through same-origin URLs with HTTP Range support, so direct video seeking and ffmpeg conversion both work with the network disconnected. AVI/MKV retain their original quality and embedded streams, then convert locally when played. The published app must be served over HTTPS (or `localhost`) for service workers and persistent storage.
+The browser requests persistent Cache Storage, and a service worker caches the app shell plus media. Cached media is exposed through same-origin URLs with HTTP Range support, so direct video seeking and ffmpeg conversion both work with the network disconnected. Converted fragments are cached separately with an LRU size limit and can be cleared from **Playlists & offline**. AVI/MKV can retain their original resolution or convert to 1080p, 720p, or 480p. The published app must be served over HTTPS (or `localhost`) for service workers and persistent storage.
 
 ## Encrypted app-data sync
 
 Choose **••• → App data sync** to designate an Azure Blob or OneDrive mount and path for synchronized state (the default is `.medius-app-state.json.enc` at the mount root). Mounts, encrypted credentials, playlists, history, and offline intent are serialized into an AES-256-GCM envelope derived from a user passphrase with PBKDF2-SHA256. Browser encryption uses Web Crypto; desktop uses .NET cryptography, and the envelope formats are compatible.
 
 The passphrase is never persisted. The designated bootstrap mount's own credential also stays local because it is required to retrieve the encrypted document; all other mount credentials are included only inside the encrypted envelope.
+
+The encrypted envelope can also be exported as a file or transferred to another browser by QR camera/image scanning. A sync QR contains both the bootstrap credential and passphrase, so treat it like a password.
 
 ## Authentication
 

@@ -29,7 +29,8 @@ public sealed class AzureFilesMediaProvider : IMediaProvider
                 CombinePath(path, entry.Name),
                 entry.Name,
                 entry.IsDirectory,
-                entry.FileSize));
+                entry.FileSize,
+                entry.Properties?.LastModified));
         }
 
         return items

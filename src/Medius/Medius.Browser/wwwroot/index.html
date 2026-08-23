@@ -24,6 +24,15 @@
             <div id="player-status">Select a video from the browser.</div>
         </section>
     </main>
+    <div id="sync-qr-overlay" hidden>
+        <div id="sync-qr-card">
+            <button id="sync-qr-close" type="button" onclick="document.getElementById('sync-qr-overlay').hidden=true">✕</button>
+            <h2 id="sync-qr-title">Medius sync</h2>
+            <img id="sync-qr-image" alt="Medius sync QR code">
+            <video id="sync-qr-camera" muted playsinline hidden></video>
+            <p id="sync-qr-message"></p>
+        </div>
+    </div>
     <script>
         window.__mediusErrors = [];
         window.addEventListener("error", event => window.__mediusErrors.push(event.error?.stack ?? event.message));

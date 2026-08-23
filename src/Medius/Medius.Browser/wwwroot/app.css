@@ -142,6 +142,65 @@ body {
     display: none;
 }
 
+#sync-qr-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgb(1 5 12 / 82%);
+    backdrop-filter: blur(16px);
+}
+
+#sync-qr-overlay[hidden] {
+    display: none;
+}
+
+#sync-qr-card {
+    position: relative;
+    width: min(420px, 100%);
+    padding: 22px;
+    color: #f4f7fc;
+    text-align: center;
+    background: #101d30;
+    border: 1px solid #2a3d56;
+    border-radius: 22px;
+    box-shadow: 0 30px 100px rgb(0 0 0 / 55%);
+}
+
+#sync-qr-card h2 {
+    margin: 0 30px 16px;
+}
+
+#sync-qr-image,
+#sync-qr-camera {
+    width: min(360px, 100%);
+    aspect-ratio: 1;
+    object-fit: cover;
+    background: #fff;
+    border-radius: 14px;
+}
+
+#sync-qr-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    padding: 7px 10px;
+    color: #fff;
+    background: #1c2d44;
+    border: 0;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+#sync-qr-message {
+    margin: 14px 0 0;
+    color: #93a4ba;
+    font-size: .82rem;
+    line-height: 1.45;
+}
+
 @media (max-width: 760px) {
     html,
     body,

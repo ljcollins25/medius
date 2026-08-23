@@ -349,6 +349,9 @@ public sealed class MountPersistenceTests
                 double embeddedSubtitleOffsetMilliseconds,
                 double? startSeconds = null,
                 double? endSeconds = null,
+                string? mediaKey = null,
+                int maxWidth = 854,
+                long convertedCacheLimitBytes = 536870912,
                 CancellationToken cancellationToken = default)
             {
                 StartSeconds = startSeconds;
@@ -367,5 +370,11 @@ public sealed class MountPersistenceTests
 
             public Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default) =>
                 Task.FromResult<LocalSubtitle?>(null);
+
+            public Task ClearConvertedCacheAsync(CancellationToken cancellationToken = default) =>
+                Task.CompletedTask;
+
+            public Task<long> GetConvertedCacheUsageAsync(CancellationToken cancellationToken = default) =>
+                Task.FromResult(0L);
     }
 }

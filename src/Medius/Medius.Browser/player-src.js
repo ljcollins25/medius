@@ -1,10 +1,13 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
+import QRCode from "qrcode";
+import { BrowserQRCodeReader } from "@zxing/browser";
 
 let ffmpeg;
 let mediaObjectUrl;
 let subtitleObjectUrl;
 let ffmpegLogSink;
 let segmentedActive = false;
+let activeSegmentLoop;
 let playbackGeneration = 0;
 let subtitleRevision = 0;
 const ffmpegLog = [];
@@ -14,6 +17,8 @@ const status = () => document.getElementById("player-status");
 const mountsKey = "medius.mounts.v1";
 const ffmpegAssetVersion = "3";
 const offlineCacheName = "medius-media-v1";
+const convertedCacheName = "medius-converted-v1";
+const convertedCacheIndexKey = "medius.converted-cache-index.v1";
 
 // Playback starts after this much media is ready; later pieces are longer for efficiency.
 const FIRST_SEGMENT_SECONDS = 5;
@@ -25,6 +30,17 @@ const KEEP_BEHIND_SECONDS = 30;
 
 export function loadMounts() {
     return localStorage.getItem(mountsKey);
+}
+
+export async function clearConvertedCache() {
+    await caches.delete(convertedCacheName);
+    localStorage.removeItem(convertedCacheIndexKey);
+    return true;
+}
+
+export async function getConvertedCacheUsage() {
+    return readConvertedCacheIndex()
+        .reduce((total, item) => total + item.size, 0);
 }
 
 export function saveMounts(json) {
@@ -102,6 +118,7 @@ export async function decryptAppState(envelopeJson, passphrase) {
     if (envelope.Version !== 1) {
         throw new Error(`Unsupported app-state envelope version ${envelope.Version}.`);
     }
+
     const salt = base64ToBytes(envelope.Salt);
     const nonce = base64ToBytes(envelope.Nonce);
     const ciphertext = base64ToBytes(envelope.Ciphertext);
@@ -120,6 +137,132 @@ export async function decryptAppState(envelopeJson, passphrase) {
         key,
         encrypted);
     return new TextDecoder().decode(plaintext);
+}
+
+export function exportAppDataFile(fileName, content) {
+    const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function importAppDataFile() {
+    return new Promise(resolve => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json,.enc,application/json";
+        input.oncancel = () => resolve(null);
+        input.onchange = async () => {
+            const file = input.files?.[0];
+            resolve(file ? await file.text() : null);
+        };
+        input.click();
+    });
+}
+
+export async function showSyncQr(payload) {
+    if (new TextEncoder().encode(payload).byteLength > 650) {
+        throw new Error("The sync credential is too large for a reliable QR code.");
+    }
+    const dataUrl = await QRCode.toDataURL(payload, {
+        errorCorrectionLevel: "L",
+        margin: 2,
+        width: 360,
+        color: { dark: "#07111fff", light: "#ffffffff" }
+    });
+    const overlay = document.getElementById("sync-qr-overlay");
+    const image = document.getElementById("sync-qr-image");
+    const camera = document.getElementById("sync-qr-camera");
+    image.src = dataUrl;
+    image.hidden = false;
+    camera.hidden = true;
+    document.getElementById("sync-qr-title").textContent = "Scan to sync Medius";
+    document.getElementById("sync-qr-message").textContent =
+        "This code contains the mount credential and passphrase. Treat it like a password.";
+    document.getElementById("sync-qr-close").onclick = closeSyncQr;
+    overlay.hidden = false;
+    return true;
+}
+
+export async function scanSyncQrCamera() {
+    const overlay = document.getElementById("sync-qr-overlay");
+    const image = document.getElementById("sync-qr-image");
+    const camera = document.getElementById("sync-qr-camera");
+    image.hidden = true;
+    camera.hidden = false;
+    document.getElementById("sync-qr-title").textContent = "Scan sync QR";
+    document.getElementById("sync-qr-message").textContent = "Point the camera at a Medius sync code.";
+    overlay.hidden = false;
+
+    const reader = new BrowserQRCodeReader();
+    return await new Promise(async (resolve, reject) => {
+        let controls;
+        let finished = false;
+        const finish = value => {
+            if (finished) return;
+            finished = true;
+            controls?.stop();
+            camera.srcObject = null;
+            overlay.hidden = true;
+            resolve(value);
+        };
+        const fail = error => {
+            if (finished) return;
+            finished = true;
+            controls?.stop();
+            camera.srcObject = null;
+            overlay.hidden = true;
+            reject(error);
+        };
+        document.getElementById("sync-qr-close").onclick = () => finish(null);
+        try {
+            controls = await reader.decodeFromVideoDevice(undefined, camera, result => {
+                if (result) finish(result.getText());
+            });
+            if (finished) {
+                controls.stop();
+                camera.srcObject = null;
+            }
+        } catch (error) {
+            fail(error);
+        }
+    });
+}
+
+export function scanSyncQrFile() {
+    return new Promise(resolve => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "image/*";
+        input.oncancel = () => resolve(null);
+        input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) return resolve(null);
+            const url = URL.createObjectURL(file);
+            try {
+                resolve(await decodeSyncQrImage(url));
+            } catch {
+                resolve(null);
+            } finally {
+                URL.revokeObjectURL(url);
+            }
+        };
+        input.click();
+    });
+}
+
+export async function decodeSyncQrImage(url) {
+    const result = await new BrowserQRCodeReader().decodeFromImageUrl(url);
+    return result.getText();
+}
+
+export function closeSyncQr() {
+    document.getElementById("sync-qr-overlay").hidden = true;
+    const camera = document.getElementById("sync-qr-camera");
+    for (const track of camera.srcObject?.getTracks?.() ?? []) track.stop();
+    camera.srcObject = null;
 }
 
 async function deriveAppStateKey(passphrase, salt, iterations, usages) {
@@ -195,12 +338,19 @@ export async function playVideo(
     subtitleWebVtt,
     embeddedSubtitleOffsetMilliseconds,
     startSeconds = -1,
-    endSeconds = -1) {
+    endSeconds = -1,
+    mediaKey = null,
+    maxWidth = 854,
+    convertedCacheLimitBytes = 536870912) {
+    const previousSegmentLoop = activeSegmentLoop;
     const generation = beginPlaybackTransition(
         fileName,
         mode === "Direct" ? "Loading media…" : "Loading ffmpeg.wasm…");
 
     try {
+        await previousSegmentLoop?.catch(() => {});
+        if (generation !== playbackGeneration) return false;
+
         if (mode === "Transcode" && "MediaSource" in window) {
             await playTranscodedSegments(
                 uri,
@@ -209,7 +359,10 @@ export async function playVideo(
                 embeddedSubtitleOffsetMilliseconds,
                 generation,
                 startSeconds,
-                endSeconds);
+                endSeconds,
+                mediaKey,
+                maxWidth,
+                convertedCacheLimitBytes);
             return true;
         }
 
@@ -416,13 +569,20 @@ async function playTranscodedSegments(
     embeddedSubtitleOffsetMilliseconds,
     generation,
     startSeconds,
-    endSeconds) {
+    endSeconds,
+    mediaKey,
+    maxWidth,
+    convertedCacheLimitBytes) {
     segmentedActive = true;
-    await ensureFfmpegLoaded();
 
     const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ".bin";
     ffmpegLog.length = 0;
-    status().textContent = "Loading media…";
+    status().textContent = "Checking converted cache…";
+    try {
+        await pruneConvertedCache(Math.max(0, convertedCacheLimitBytes));
+    } catch (error) {
+        console.warn("Could not enforce the converted-media cache limit; playback will continue.", error);
+    }
 
     const session = {
         generation,
@@ -431,27 +591,29 @@ async function playTranscodedSegments(
         subtitleWebVtt,
         embeddedSubtitleOffsetMilliseconds,
         probe: { durationSeconds: Number.NaN, hasSubtitles: false },
-        maxWidth: 854,
+        maxWidth: Math.max(0, maxWidth),
+        mediaKey: mediaKey ?? `${fileName}|${uri}`,
+        convertedCacheLimitBytes: Math.max(0, convertedCacheLimitBytes),
         needsInitSegment: true,
         seekTarget: null,
         mediaSource: null,
         sourceBuffer: null,
-        player: null
-        ,
+        player: null,
         startSeconds: startSeconds >= 0 ? startSeconds : 0,
-        endSeconds: endSeconds > startSeconds ? endSeconds : null
+        endSeconds: endSeconds > startSeconds ? endSeconds : null,
+        uri,
+        extension,
+        input: null
     };
-
-    session.input = await mountInput(uri, extension, generation);
-    if (!session.isCurrent()) {
-        await releaseInput(session.input);
-        return;
-    }
 
     // Hand control back as soon as playback starts; conversion continues in the background.
     let signalStarted;
     const started = new Promise(resolve => { signalStarted = resolve; });
     const loop = runSegmentLoop(session, signalStarted);
+    activeSegmentLoop = loop;
+    void loop.finally(() => {
+        if (activeSegmentLoop === loop) activeSegmentLoop = undefined;
+    }).catch(() => {});
     loop.catch(error => {
         if (session.isCurrent()) {
             status().textContent = error.message;
@@ -524,6 +686,7 @@ async function runSegmentLoop(session, onStarted) {
                 && position >= FIRST_SEGMENT_SECONDS + (SEGMENT_SECONDS * 2)) {
                 session.embeddedSubtitleStarted = true;
                 const revision = subtitleRevision;
+                await ensureSessionInput(session);
                 const embedded = await extractEmbeddedSubtitle(session.input.path);
                 if (session.isCurrent() && revision === subtitleRevision && embedded) {
                     setSubtitleInternal(
@@ -541,6 +704,27 @@ async function runSegmentLoop(session, onStarted) {
 }
 
 async function convertSegment(session, start, duration) {
+    const cacheKey = getConvertedSegmentKey(session, start, duration);
+    let cached;
+    try {
+        cached = await readConvertedSegment(cacheKey);
+    } catch (error) {
+        console.warn("Could not read a converted-media cache entry; reconverting it.", error);
+    }
+    if (cached) {
+        if (Number.isNaN(session.probe.durationSeconds) && cached.probe) {
+            session.probe = cached.probe;
+        }
+        return cached.data;
+    }
+
+    await ensureSessionInput(session);
+    if (!session.isCurrent()) return null;
+    if (Number.isNaN(session.probe.durationSeconds)) {
+        await probeSessionInput(session);
+        if (!session.isCurrent()) return null;
+    }
+
     const outputName = "segment.mp4";
     await Promise.allSettled([ffmpeg.deleteFile(outputName)]);
 
@@ -564,7 +748,108 @@ async function convertSegment(session, start, duration) {
     await Promise.allSettled([ffmpeg.deleteFile(outputName)]);
     if (findMediaFragmentOffset(data) < 0) return null;
 
+    try {
+        await writeConvertedSegment(
+            cacheKey,
+            data,
+            session.probe,
+            session.convertedCacheLimitBytes);
+    } catch (error) {
+        console.warn("Could not cache the converted media segment; playback will continue.", error);
+    }
     return data;
+}
+
+async function probeSessionInput(session) {
+    const lines = [];
+    ffmpegLogSink = lines;
+    try {
+        await ffmpeg.exec([
+            "-hide_banner",
+            "-i", session.input.path,
+            "-map", "0:v:0",
+            "-frames:v", "0",
+            "-f", "null",
+            "-"
+        ], 30000);
+    } finally {
+        ffmpegLogSink = undefined;
+    }
+    session.probe = parseProbe(lines.join("\n"));
+}
+
+function getConvertedSegmentKey(session, start, duration) {
+    return [
+        "v2",
+        session.mediaKey,
+        start.toFixed(3),
+        duration.toFixed(3),
+        session.maxWidth
+    ].join("|");
+}
+
+async function readConvertedSegment(key) {
+    const cache = await caches.open(convertedCacheName);
+    const response = await cache.match(convertedSegmentRequest(key));
+    if (!response) return null;
+
+    touchConvertedCacheEntry(key, Number(response.headers.get("X-Medius-Size") ?? 0));
+    const probeHeader = response.headers.get("X-Medius-Probe");
+    return {
+        data: new Uint8Array(await response.arrayBuffer()),
+        probe: probeHeader
+            ? JSON.parse(new TextDecoder().decode(base64ToBytes(probeHeader)))
+            : null
+    };
+}
+
+async function writeConvertedSegment(key, data, probe, limitBytes) {
+    if (limitBytes <= 0) return;
+    const cache = await caches.open(convertedCacheName);
+    const probeHeader = bytesToBase64(new TextEncoder().encode(JSON.stringify(probe)));
+    await cache.put(
+        convertedSegmentRequest(key),
+        new Response(data, {
+            headers: {
+                "Content-Type": "video/mp4",
+                "X-Medius-Size": String(data.byteLength),
+                "X-Medius-Probe": probeHeader
+            }
+        }));
+    touchConvertedCacheEntry(key, data.byteLength);
+    await pruneConvertedCache(limitBytes);
+}
+
+function convertedSegmentRequest(key) {
+    return new Request(
+        new URL(`./__medius_converted/${encodeURIComponent(key)}`, location.href),
+        { method: "GET" });
+}
+
+function readConvertedCacheIndex() {
+    try {
+        return JSON.parse(localStorage.getItem(convertedCacheIndexKey) ?? "[]");
+    } catch {
+        return [];
+    }
+}
+
+function touchConvertedCacheEntry(key, size) {
+    const entries = readConvertedCacheIndex().filter(item => item.key !== key);
+    entries.push({ key, size, lastAccess: Date.now() });
+    localStorage.setItem(convertedCacheIndexKey, JSON.stringify(entries));
+}
+
+async function pruneConvertedCache(limitBytes) {
+    const entries = readConvertedCacheIndex().sort((a, b) => a.lastAccess - b.lastAccess);
+    let total = entries.reduce((sum, item) => sum + item.size, 0);
+    const cache = await caches.open(convertedCacheName);
+    while (total > limitBytes && entries.length > 0) {
+        const removed = entries.shift();
+        total -= removed.size;
+        await cache.delete(convertedSegmentRequest(removed.key));
+    }
+    localStorage.setItem(convertedCacheIndexKey, JSON.stringify(entries));
 }
 
 async function appendSegment(session, data, start) {
@@ -761,7 +1046,7 @@ function buildSegmentArgs(session, outputName, start, duration) {
     if (preciseSeekSeconds > 0) args.push("-ss", String(preciseSeekSeconds));
     args.push("-t", String(duration), "-map", "0:v:0", "-map", "0:a:0?");
 
-    if (session.probe.videoCodec === "h264") {
+    if (session.probe.videoCodec === "h264" && session.maxWidth === 0) {
         args.push("-c:v", "copy");
     } else {
         args.push(
@@ -792,7 +1077,16 @@ function buildSegmentArgs(session, outputName, start, duration) {
 
 // WORKERFS exposes the source as a virtual file so ffmpeg reads the parts it needs
 // instead of copying the whole download into the wasm heap.
-async function mountInput(uri, extension, generation) {
+async function ensureSessionInput(session) {
+    if (session.input) return;
+    status().textContent = "Loading media source…";
+    await ensureFfmpegLoaded();
+    if (!session.isCurrent()) return;
+    const instance = ffmpeg;
+    session.input = await mountInput(session.uri, session.extension, session.generation, instance);
+}
+
+async function mountInput(uri, extension, generation, instance) {
     const response = await fetch(uri);
     if (!response.ok) {
         throw new Error(`Could not download the media (HTTP ${response.status}).`);
@@ -802,28 +1096,31 @@ async function mountInput(uri, extension, generation) {
     const name = `input${extension}`;
     const mountPoint = `/medius-${generation}`;
     try {
-        await ffmpeg.createDir(mountPoint);
-        await ffmpeg.mount("WORKERFS", { blobs: [{ name, data: blob }] }, mountPoint);
-        return { path: `${mountPoint}/${name}`, mountPoint, name };
+        await instance.createDir(mountPoint);
+        await instance.mount("WORKERFS", { blobs: [{ name, data: blob }] }, mountPoint);
+        return { path: `${mountPoint}/${name}`, mountPoint, name, instance };
     } catch {
         // Fall back to an in-memory copy when the runtime has no WORKERFS support.
-        await ffmpeg.writeFile(name, new Uint8Array(await blob.arrayBuffer()));
-        return { path: name, name };
+        await instance.writeFile(name, new Uint8Array(await blob.arrayBuffer()));
+        return { path: name, name, instance };
     }
 }
 
 async function releaseInput(input) {
-    if (!input || !ffmpeg) return;
+    if (!input?.instance) return;
 
     if (input.mountPoint) {
         await Promise.allSettled([
-            ffmpeg.unmount(input.mountPoint),
-            ffmpeg.deleteDir(input.mountPoint)
+            input.instance.unmount(input.mountPoint),
+            input.instance.deleteDir(input.mountPoint)
         ]);
         return;
     }
 
-    await cleanupFfmpegFiles(input.name);
+    await Promise.allSettled([
+        input.instance.deleteFile(input.name),
+        input.instance.deleteFile("embedded.vtt")
+    ]);
 }
 
 // Reads the real codec configuration out of the produced init segment so the

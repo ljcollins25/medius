@@ -9,6 +9,8 @@ using Medius.Services;
 
 namespace Medius.ViewModels;
 
+public sealed record ConversionResolutionOption(string Name, int Width);
+
 public partial class MainViewModel : ViewModelBase
 {
     private const string MountIdKey = "medius.mountId";
@@ -28,10 +30,22 @@ public partial class MainViewModel : ViewModelBase
     public MainViewModel()
     {
         ProviderKinds = ["Azure Blob", "Azure Files", "OneDrive"];
+        ConversionResolutions =
+        [
+            new("Original", 0),
+            new("1080p", 1920),
+            new("720p", 1280),
+            new("480p", 854)
+        ];
+        SelectedConversionResolution = ConversionResolutions[^1];
         _ = InitializeAsync();
     }
 
     public IReadOnlyList<string> ProviderKinds { get; }
+
+    public IReadOnlyList<ConversionResolutionOption> ConversionResolutions { get; }
+
+    public bool SupportsPortableAppData => OperatingSystem.IsBrowser();
 
     public ObservableCollection<MountDefinition> Mounts { get; } = [];
 
@@ -108,6 +122,15 @@ public partial class MainViewModel : ViewModelBase
     public partial string OfflineStorageLabel { get; set; } = "Offline storage";
 
     [ObservableProperty]
+    public partial ConversionResolutionOption? SelectedConversionResolution { get; set; }
+
+    [ObservableProperty]
+    public partial double ConvertedCacheSizeMb { get; set; } = 512;
+
+    [ObservableProperty]
+    public partial string ConvertedCacheLabel { get; set; } = "Converted cache";
+
+    [ObservableProperty]
     public partial string CurrentPath { get; set; } = string.Empty;
 
     [ObservableProperty]
@@ -177,6 +200,7 @@ public partial class MainViewModel : ViewModelBase
             Status = "Choose the mount that will store app data.";
             return;
         }
+
         if (string.IsNullOrWhiteSpace(AppDataPassphrase))
         {
             Status = "Enter the encryption passphrase.";
@@ -187,6 +211,105 @@ public partial class MainViewModel : ViewModelBase
             await SaveStateAsync(sync: false);
             await PushAppDataAsync(saveLocalFirst: false);
             Status = $"Encrypted app data saved to {AppDataMount.Name}.";
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportAppDataAsync()
+    {
+        if (string.IsNullOrWhiteSpace(AppDataPassphrase))
+        {
+            Status = "Enter an export passphrase first.";
+            return;
+        }
+        try
+        {
+            await SaveStateAsync(sync: false);
+            var envelope = await PlatformServices.StateProtector.EncryptAsync(
+                AppStateSerializer.ToJson(_appState),
+                AppDataPassphrase);
+            await PlatformServices.PortableAppData.ExportFileAsync(
+                $"medius-app-state-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json",
+                envelope);
+            Status = "Encrypted app data exported.";
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ImportAppDataAsync()
+    {
+        if (string.IsNullOrWhiteSpace(AppDataPassphrase))
+        {
+            Status = "Enter the file's passphrase first.";
+            return;
+        }
+        try
+        {
+            var envelope = await PlatformServices.PortableAppData.ImportFileAsync();
+            if (string.IsNullOrWhiteSpace(envelope)) return;
+            var plaintext = await PlatformServices.StateProtector.DecryptAsync(envelope, AppDataPassphrase);
+            await ApplyMergedStateAsync(AppStateSerializer.FromJson(plaintext));
+            Status = "Encrypted app data imported and merged.";
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ShowSyncQrAsync()
+    {
+        if (AppDataMount is null || string.IsNullOrWhiteSpace(AppDataPassphrase))
+        {
+            Status = "Choose the app-data mount and enter its passphrase first.";
+            return;
+        }
+        try
+        {
+            var payload = new SyncBootstrap
+            {
+                Mount = AppDataMount,
+                BlobPath = AppDataPath.Trim('/'),
+                Passphrase = AppDataPassphrase
+            };
+            var json = JsonSerializer.Serialize(payload, AppStateJsonContext.Default.SyncBootstrap);
+            await PlatformServices.PortableAppData.ShowQrAsync(json);
+            Status = "QR shown. It contains the credential and passphrase.";
+        }
+        catch (Exception exception)
+        {
+            Status = $"Could not create sync QR: {exception.Message} Use encrypted file export instead.";
+        }
+    }
+
+    [RelayCommand]
+    private async Task ScanSyncQrCameraAsync()
+    {
+        try
+        {
+            await ApplySyncBootstrapAsync(await PlatformServices.PortableAppData.ScanQrCameraAsync());
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ScanSyncQrFileAsync()
+    {
+        try
+        {
+            await ApplySyncBootstrapAsync(await PlatformServices.PortableAppData.ScanQrFileAsync());
         }
         catch (Exception exception)
         {
@@ -216,41 +339,7 @@ public partial class MainViewModel : ViewModelBase
 
             var plaintext = await PlatformServices.StateProtector.DecryptAsync(envelope, AppDataPassphrase);
             var synced = AppStateSerializer.FromJson(plaintext);
-            var localMounts = Mounts.ToDictionary(item => item.Id);
-            var mergedMounts = synced.Mounts
-                .Select(item => localMounts.TryGetValue(item.Id, out var local)
-                    ? item with
-                    {
-                        Credential = string.IsNullOrWhiteSpace(local.Credential)
-                            ? item.Credential
-                            : local.Credential,
-                        Endpoint = local.Endpoint.Contains('?')
-                            ? local.Endpoint
-                            : item.Endpoint
-                    }
-                    : item)
-                .Concat(Mounts.Where(local => synced.Mounts.All(remote => remote.Id != local.Id)))
-                .ToList();
-            var mergedPlaylists = MergePlaylists(synced.Playlists, Playlists);
-            var mergedOffline = synced.OfflineMedia
-                .Concat(OfflineFiles)
-                .GroupBy(item => (item.MountId, item.Path))
-                .Select(group => group.OrderByDescending(item => item.DownloadedAt).First())
-                .ToList();
-
-            Mounts.Clear();
-            Playlists.Clear();
-            OfflineFiles.Clear();
-            foreach (var mount in mergedMounts) Mounts.Add(mount);
-            foreach (var playlist in mergedPlaylists) Playlists.Add(playlist);
-            if (!Playlists.Any(item => item.Kind == PlaylistKind.History))
-            {
-                Playlists.Add(AppState.CreateHistoryPlaylist());
-            }
-            foreach (var offline in mergedOffline) OfflineFiles.Add(offline);
-            SelectedPlaylist = Playlists.FirstOrDefault(item => !item.IsAutomatic);
-            await SaveStateAsync(sync: false);
-            ShowMountRoot();
+            await ApplyMergedStateAsync(synced);
             Status = "Encrypted app data downloaded and merged.";
         }
         catch (Exception exception)
@@ -279,6 +368,90 @@ public partial class MainViewModel : ViewModelBase
         var plaintext = AppStateSerializer.ToJson(cloudState);
         var envelope = await PlatformServices.StateProtector.EncryptAsync(plaintext, AppDataPassphrase);
         await provider.WriteTextAsync(AppDataPath.Trim('/'), envelope);
+    }
+
+    private async Task ApplySyncBootstrapAsync(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson)) return;
+        var payload = JsonSerializer.Deserialize(
+            payloadJson,
+            AppStateJsonContext.Default.SyncBootstrap)
+            ?? throw new InvalidDataException("The QR code does not contain Medius sync data.");
+        if (payload.Version != 1)
+        {
+            throw new NotSupportedException($"Unsupported sync QR version {payload.Version}.");
+        }
+
+        var existing = Mounts.FirstOrDefault(item => item.Id == payload.Mount.Id);
+        if (existing is null)
+        {
+            Mounts.Add(payload.Mount);
+            AppDataMount = payload.Mount;
+        }
+        else
+        {
+            var index = Mounts.IndexOf(existing);
+            Mounts[index] = payload.Mount;
+            AppDataMount = payload.Mount;
+        }
+        AppDataPath = payload.BlobPath;
+        AppDataPassphrase = payload.Passphrase;
+        await SaveStateAsync(sync: false);
+        await PullAppDataAsync();
+    }
+
+    private async Task ApplyMergedStateAsync(AppState synced)
+    {
+        var localAppDataMountId = AppDataMount?.Id;
+        var localAppDataPath = AppDataPath;
+        var localMounts = Mounts.ToDictionary(item => item.Id);
+        var mergedMounts = synced.Mounts
+            .Select(item => localMounts.TryGetValue(item.Id, out var local)
+                ? item with
+                {
+                    Credential = string.IsNullOrWhiteSpace(local.Credential)
+                        ? item.Credential
+                        : local.Credential,
+                    Endpoint = local.Endpoint.Contains('?')
+                        ? local.Endpoint
+                        : item.Endpoint
+                }
+                : item)
+            .Concat(Mounts.Where(local => synced.Mounts.All(remote => remote.Id != local.Id)))
+            .ToList();
+        var mergedPlaylists = MergePlaylists(synced.Playlists, Playlists);
+        var mergedOffline = synced.OfflineMedia
+            .Concat(OfflineFiles)
+            .GroupBy(item => (item.MountId, item.Path))
+            .Select(group => group.OrderByDescending(item => item.DownloadedAt).First())
+            .ToList();
+
+        Mounts.Clear();
+        Playlists.Clear();
+        OfflineFiles.Clear();
+        foreach (var mount in mergedMounts) Mounts.Add(mount);
+        foreach (var playlist in mergedPlaylists) Playlists.Add(playlist);
+        if (!Playlists.Any(item => item.Kind == PlaylistKind.History))
+        {
+            Playlists.Add(AppState.CreateHistoryPlaylist());
+        }
+        foreach (var offline in mergedOffline) OfflineFiles.Add(offline);
+        SelectedPlaylist = Playlists.FirstOrDefault(item => !item.IsAutomatic);
+        AppDataMount = Mounts.FirstOrDefault(item => item.Id == localAppDataMountId);
+        if (AppDataMount is not null)
+        {
+            AppDataPath = localAppDataPath;
+        }
+        else
+        {
+            AppDataMount = Mounts.FirstOrDefault(item => item.Id == synced.AppDataSync.BootstrapMountId);
+            if (!string.IsNullOrWhiteSpace(synced.AppDataSync.BlobPath))
+            {
+                AppDataPath = synced.AppDataSync.BlobPath;
+            }
+        }
+        await SaveStateAsync(sync: false);
+        ShowMountRoot();
     }
 
     [RelayCommand]
@@ -733,7 +906,10 @@ public partial class MainViewModel : ViewModelBase
                 subtitle,
                 SubtitleOffsetMilliseconds,
                 startSeconds,
-                endSeconds);
+                endSeconds,
+                $"{mount.Id}|{video.Path}|{video.Size}|{video.LastModified:O}",
+                SelectedConversionResolution?.Width ?? 854,
+                (long)(Math.Max(0, ConvertedCacheSizeMb) * 1024 * 1024));
             if (requestId != _playbackRequestId) return;
 
             _playingVideo = video;
@@ -822,6 +998,7 @@ public partial class MainViewModel : ViewModelBase
             SelectedPlaylist = Playlists.FirstOrDefault(item => !item.IsAutomatic);
             ShowMountRoot();
             await RefreshOfflineStorageAsync();
+            await RefreshConvertedCacheAsync();
             Status = Mounts.Count == 0
                 ? "Use File → Add storage mount to get started."
                 : $"{Mounts.Count} mount{(Mounts.Count == 1 ? string.Empty : "s")}.";
@@ -1000,6 +1177,28 @@ public partial class MainViewModel : ViewModelBase
         var estimate = await PlatformServices.Offline.EstimateAsync();
         OfflineStorageLabel =
             $"{FormatBytes(estimate.Usage)} used · {FormatBytes(Math.Max(0, estimate.Quota - estimate.Usage))} available";
+    }
+
+    [RelayCommand]
+    private async Task ClearConvertedCacheAsync()
+    {
+        try
+        {
+            await PlatformServices.Playback.ClearConvertedCacheAsync();
+            await RefreshConvertedCacheAsync();
+            Status = "Converted segment cache cleared.";
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
+    }
+
+    private async Task RefreshConvertedCacheAsync()
+    {
+        var usage = await PlatformServices.Playback.GetConvertedCacheUsageAsync();
+        ConvertedCacheLabel =
+            $"{FormatBytes(usage)} converted · {ConvertedCacheSizeMb:0} MB limit";
     }
 
     private static MediaItem CreateVirtualMediaItem(

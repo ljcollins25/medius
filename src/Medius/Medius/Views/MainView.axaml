@@ -201,6 +201,32 @@
                                     Content="Download &amp; merge"
                                     Command="{Binding PullAppDataCommand}" />
                         </Grid>
+                        <Grid ColumnDefinitions="*,*"
+                              ColumnSpacing="8"
+                              IsVisible="{Binding SupportsPortableAppData}">
+                            <Button Content="Export encrypted file"
+                                    Command="{Binding ExportAppDataCommand}" />
+                            <Button Grid.Column="1"
+                                    Content="Import encrypted file"
+                                    Command="{Binding ImportAppDataCommand}" />
+                        </Grid>
+                        <TextBlock Text="QR quick setup includes the mount credential and passphrase. Anyone who scans it can access your synced state."
+                                   IsVisible="{Binding SupportsPortableAppData}"
+                                   Foreground="#FBBF24"
+                                   FontSize="11"
+                                   TextWrapping="Wrap" />
+                        <Grid ColumnDefinitions="*,*,*"
+                              ColumnSpacing="8"
+                              IsVisible="{Binding SupportsPortableAppData}">
+                            <Button Content="Show QR"
+                                    Command="{Binding ShowSyncQrCommand}" />
+                            <Button Grid.Column="1"
+                                    Content="Scan camera"
+                                    Command="{Binding ScanSyncQrCameraCommand}" />
+                            <Button Grid.Column="2"
+                                    Content="Scan image"
+                                    Command="{Binding ScanSyncQrFileCommand}" />
+                        </Grid>
                     </StackPanel>
                 </Border>
 
@@ -229,9 +255,10 @@
                     <ItemsControl ItemsSource="{Binding Items}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="core:MediaItem">
-                                <Grid ColumnDefinitions="50,*" Margin="2,1">
+                                <Grid ColumnDefinitions="50,*,Auto" Margin="2,1">
                                     <Button Grid.Column="0"
                                             Click="OnItemActionClicked"
+                                            ContextRequested="OnItemContextRequested"
                                             Tag="{Binding}"
                                             Width="40"
                                             Height="40"
@@ -247,6 +274,7 @@
                                     <Button Grid.Column="1"
                                             Classes="row"
                                             Click="OnItemClicked"
+                                            ContextRequested="OnItemContextRequested"
                                             Tag="{Binding}">
                                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
                                             <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
@@ -265,6 +293,13 @@
                                                        VerticalAlignment="Center" />
                                         </Grid>
                                     </Button>
+                                    <Button Grid.Column="2"
+                                            Click="OnItemMenuClicked"
+                                            Tag="{Binding}"
+                                            Content="•••"
+                                            Padding="9,6"
+                                            Background="Transparent"
+                                            VerticalAlignment="Center" />
                                 </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -394,14 +429,38 @@
                                                   Maximum="86400" />
                                 </StackPanel>
                             </Grid>
-                            <Button Content="Add selected video to playlist"
-                                   Command="{Binding AddSelectedToPlaylistCommand}" />
+                            <TextBlock Classes="muted"
+                                       Text="Conversion"
+                                       FontSize="11"
+                                       FontWeight="SemiBold" />
                             <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-                                <Button Content="Keep selected offline"
-                                       Command="{Binding KeepSelectedOfflineCommand}" />
+                                <StackPanel>
+                                    <TextBlock Classes="muted" Text="Resolution" FontSize="11" />
+                                    <ComboBox ItemsSource="{Binding ConversionResolutions}"
+                                             SelectedItem="{Binding SelectedConversionResolution}">
+                                       <ComboBox.ItemTemplate>
+                                           <DataTemplate>
+                                               <TextBlock Text="{Binding Name}" />
+                                           </DataTemplate>
+                                       </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Classes="muted" Text="Cache limit (MB)" FontSize="11" />
+                                    <NumericUpDown Value="{Binding ConvertedCacheSizeMb}"
+                                                  Increment="128"
+                                                  Minimum="0"
+                                                  Maximum="16384" />
+                                </StackPanel>
+                            </Grid>
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                <TextBlock Classes="muted"
+                                          Text="{Binding ConvertedCacheLabel}"
+                                          VerticalAlignment="Center"
+                                          FontSize="11" />
                                 <Button Grid.Column="1"
-                                       Content="Remove offline copy"
-                                       Command="{Binding RemoveSelectedOfflineCommand}" />
+                                       Content="Clear converted cache"
+                                       Command="{Binding ClearConvertedCacheCommand}" />
                             </Grid>
                             <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8">
                                 <Button Content="Pin playlist"
@@ -426,16 +485,10 @@
                             <Button Content="Delete selected playlist"
                                    Command="{Binding DeleteSelectedPlaylistCommand}" />
                         </StackPanel>
-                        <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-                            <Button Content="+ Add storage"
-                                    Command="{Binding ShowAddMountCommand}"
-                                    Padding="12,9" />
-                            <Button Grid.Column="1"
-                                    Classes="accent"
-                                    Content="Open selected"
-                                    Command="{Binding OpenCommand}"
-                                    HorizontalAlignment="Stretch" />
-                        </Grid>
+                        <Button Content="+ Add storage"
+                                Command="{Binding ShowAddMountCommand}"
+                                Padding="12,9"
+                                HorizontalAlignment="Stretch" />
                         <TextBlock Classes="muted"
                                    Text="{Binding Status}"
                                    FontSize="11"

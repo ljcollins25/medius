@@ -118,9 +118,25 @@ public sealed record AppDataSyncSettings
     public string BlobPath { get; init; } = ".medius-app-state.json.enc";
 }
 
+/// <summary>
+/// Portable one-scan bootstrap data. The user explicitly opted to include both the
+/// bootstrap credential and passphrase, so anyone who can read this QR can access the state.
+/// </summary>
+public sealed record SyncBootstrap
+{
+    public int Version { get; init; } = 1;
+
+    public required MountDefinition Mount { get; init; }
+
+    public required string BlobPath { get; init; }
+
+    public required string Passphrase { get; init; }
+}
+
 [JsonSerializable(typeof(AppState))]
 [JsonSerializable(typeof(Playlist))]
 [JsonSerializable(typeof(PlaylistEntry))]
 [JsonSerializable(typeof(OfflineMediaMetadata))]
 [JsonSerializable(typeof(AppDataSyncSettings))]
+[JsonSerializable(typeof(SyncBootstrap))]
 internal sealed partial class AppStateJsonContext : JsonSerializerContext;
