@@ -1,5 +1,6 @@
 using System.Globalization;
 using Avalonia.Data.Converters;
+using Medius.Core;
 
 namespace Medius.Views;
 
@@ -30,4 +31,31 @@ public static class SizeConverters
 
             return unit == 0 ? $"{size:0} {units[unit]}" : $"{size:0.##} {units[unit]}";
         });
+}
+
+public static class ItemConverters
+{
+    public static readonly IValueConverter Icon =
+        new FuncValueConverter<MediaItem, string>(item =>
+            item is null
+                ? "•"
+                : item.IsDirectory
+                ? "▰"
+                : MediaTypes.IsVideo(item)
+                    ? "▶"
+                    : MediaTypes.IsSubtitle(item)
+                        ? "CC"
+                        : "•");
+
+    public static readonly IValueConverter Detail =
+        new FuncValueConverter<MediaItem, string>(item =>
+            item is null
+                ? string.Empty
+                : item.IsDirectory
+                ? "Folder"
+                : MediaTypes.IsVideo(item)
+                    ? $"{item.Extension.TrimStart('.').ToUpperInvariant()} video"
+                    : MediaTypes.IsSubtitle(item)
+                        ? $"{item.Extension.TrimStart('.').ToUpperInvariant()} subtitles"
+                        : item.Extension.TrimStart('.').ToUpperInvariant());
 }

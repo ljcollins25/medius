@@ -59,6 +59,9 @@ public partial class MainViewModel : ViewModelBase
     public partial bool IsMountEditorVisible { get; set; }
 
     [ObservableProperty]
+    public partial bool IsSubtitleMenuOpen { get; set; }
+
+    [ObservableProperty]
     public partial string CurrentPath { get; set; } = string.Empty;
 
     [ObservableProperty]
@@ -72,6 +75,12 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial double SubtitleOffsetMilliseconds { get; set; }
+
+    [ObservableProperty]
+    public partial double SubtitleFontSizePercent { get; set; } = 100;
+
+    [ObservableProperty]
+    public partial double SubtitleBackgroundOpacityPercent { get; set; } = 72;
 
     [ObservableProperty]
     public partial string SelectedSubtitleLabel { get; set; } = "Auto-detect adjacent or embedded subtitles";
@@ -99,6 +108,9 @@ public partial class MainViewModel : ViewModelBase
 
     [RelayCommand]
     private void CancelMount() => IsMountEditorVisible = false;
+
+    [RelayCommand]
+    private void ToggleSubtitleMenu() => IsSubtitleMenuOpen = !IsSubtitleMenuOpen;
 
     [RelayCommand]
     private async Task SaveMountAsync()
@@ -480,6 +492,24 @@ public partial class MainViewModel : ViewModelBase
             content,
             subtitle.Extension,
             TimeSpan.FromMilliseconds(SubtitleOffsetMilliseconds));
+    }
+
+    partial void OnSubtitleFontSizePercentChanged(double value) => _ = ApplySubtitleStyleAsync();
+
+    partial void OnSubtitleBackgroundOpacityPercentChanged(double value) => _ = ApplySubtitleStyleAsync();
+
+    private async Task ApplySubtitleStyleAsync()
+    {
+        try
+        {
+            await PlatformServices.Playback.SetSubtitleStyleAsync(
+                SubtitleFontSizePercent,
+                SubtitleBackgroundOpacityPercent / 100);
+        }
+        catch (Exception exception)
+        {
+            Status = exception.Message;
+        }
     }
 
     private async Task RunUiOperationAsync(Func<Task> operation)

@@ -7,6 +7,18 @@ namespace Medius.Core.Tests;
 public sealed class MountPersistenceTests
 {
     [Fact]
+    public void TogglesSubtitleSettingsMenu()
+    {
+        var viewModel = new MainViewModel();
+
+        viewModel.ToggleSubtitleMenuCommand.Execute(null);
+        Assert.True(viewModel.IsSubtitleMenuOpen);
+
+        viewModel.ToggleSubtitleMenuCommand.Execute(null);
+        Assert.False(viewModel.IsSubtitleMenuOpen);
+    }
+
+    [Fact]
     public async Task SavesAndRestoresMultipleNamedMounts()
     {
         var store = new TestMountStore();

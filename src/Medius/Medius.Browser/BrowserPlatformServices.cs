@@ -47,6 +47,15 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         return Task.CompletedTask;
     }
 
+    public Task SetSubtitleStyleAsync(
+        double fontSizePercent,
+        double backgroundOpacity,
+        CancellationToken cancellationToken = default)
+    {
+        SetSubtitleStyle(fontSizePercent, backgroundOpacity);
+        return Task.CompletedTask;
+    }
+
     [JSImport("playVideo", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
     private static partial Task<bool> PlayVideoAsync(
@@ -65,6 +74,9 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
 
     [JSImport("preparePlayback", "medius-player")]
     private static partial void PreparePlayback(string fileName);
+
+    [JSImport("setSubtitleStyle", "medius-player")]
+    private static partial void SetSubtitleStyle(double fontSizePercent, double backgroundOpacity);
 }
 
 [SupportedOSPlatform("browser")]

@@ -23,6 +23,11 @@ public interface IPlaybackHost
 
     Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default);
 
+    Task SetSubtitleStyleAsync(
+        double fontSizePercent,
+        double backgroundOpacity,
+        CancellationToken cancellationToken = default);
+
     Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default);
 }
 
@@ -58,6 +63,12 @@ internal sealed class UnsupportedPlaybackHost : IPlaybackHost
 
     public Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("HTML5 subtitles are available in the browser head.");
+
+    public Task SetSubtitleStyleAsync(
+        double fontSizePercent,
+        double backgroundOpacity,
+        CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
 
     public Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("Local subtitle selection is available in the browser head.");

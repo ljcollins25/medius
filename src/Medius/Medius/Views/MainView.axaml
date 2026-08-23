@@ -10,110 +10,290 @@
              d:DesignHeight="900"
              x:Class="Medius.Views.MainView"
              x:DataType="vm:MainViewModel">
-    <Grid RowDefinitions="Auto,*">
-        <Menu Grid.Row="0">
-            <MenuItem Header="_File">
-                <MenuItem Header="Add storage mount…"
-                          Command="{Binding ShowAddMountCommand}" />
-                <MenuItem Header="Remove current mount"
-                          Command="{Binding RemoveMountCommand}" />
-            </MenuItem>
-        </Menu>
+    <UserControl.Styles>
+        <Style Selector="TextBlock">
+            <Setter Property="Foreground" Value="#F4F7FC" />
+        </Style>
+        <Style Selector="TextBlock.muted">
+            <Setter Property="Foreground" Value="#8493A9" />
+        </Style>
+        <Style Selector="Button">
+            <Setter Property="Foreground" Value="#E8F0FA" />
+            <Setter Property="Background" Value="#18263A" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="12,8" />
+        </Style>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Background" Value="#213653" />
+        </Style>
+        <Style Selector="Button.accent">
+            <Setter Property="Background" Value="#1597D4" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Button.accent:pointerover">
+            <Setter Property="Background" Value="#21A9E8" />
+        </Style>
+        <Style Selector="Button.row">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        </Style>
+        <Style Selector="Button.row:pointerover">
+            <Setter Property="Background" Value="#15243A" />
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="#0D1828" />
+            <Setter Property="Foreground" Value="#F4F7FC" />
+            <Setter Property="BorderBrush" Value="#293B54" />
+        </Style>
+        <Style Selector="ComboBox">
+            <Setter Property="Background" Value="#0D1828" />
+            <Setter Property="Foreground" Value="#F4F7FC" />
+        </Style>
+        <Style Selector="NumericUpDown">
+            <Setter Property="Background" Value="#0D1828" />
+            <Setter Property="Foreground" Value="#F4F7FC" />
+        </Style>
+    </UserControl.Styles>
 
-        <ScrollViewer Grid.Row="1">
-            <Grid Margin="20" RowDefinitions="Auto,Auto,Auto,*,Auto" RowSpacing="16">
-                <StackPanel Grid.Row="0" Spacing="4">
-                    <TextBlock Text="MEDIUS" FontSize="28" FontWeight="Bold" />
-                    <TextBlock Text="Cloud media, played locally" Opacity="0.65" />
-                </StackPanel>
+    <Border Background="#08111F">
+        <Grid RowDefinitions="Auto,*">
+            <Border Grid.Row="0"
+                    Background="#0C1728"
+                    BorderBrush="#1B2A40"
+                    BorderThickness="0,0,0,1"
+                    Padding="16,12">
+                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                    <Border Grid.Column="0"
+                            Width="38"
+                            Height="38"
+                            CornerRadius="19"
+                            Background="#1597D4">
+                        <TextBlock Text="M"
+                                   FontSize="20"
+                                   FontWeight="Bold"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="White" />
+                    </Border>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                        <TextBlock Text="Medius" FontSize="20" FontWeight="SemiBold" />
+                        <TextBlock Classes="muted"
+                                   Text="{Binding CurrentLocation}"
+                                   FontSize="12"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <Menu Grid.Column="2" Background="Transparent" VerticalAlignment="Center">
+                        <MenuItem Header="•••">
+                            <MenuItem Header="Add storage mount…"
+                                      Command="{Binding ShowAddMountCommand}" />
+                            <MenuItem Header="Remove current mount"
+                                      Command="{Binding RemoveMountCommand}" />
+                        </MenuItem>
+                    </Menu>
+                </Grid>
+            </Border>
 
-                <Border Grid.Row="1"
+            <Grid Grid.Row="1" RowDefinitions="Auto,Auto,*,Auto">
+                <Border Grid.Row="0"
+                        Margin="14,12,14,0"
                         Padding="14"
-                        CornerRadius="10"
-                        Background="#151C2C"
+                        CornerRadius="16"
+                        Background="#101D30"
+                        BorderBrush="#22344C"
+                        BorderThickness="1"
                         IsVisible="{Binding IsMountEditorVisible}">
-                    <StackPanel Spacing="8">
-                        <TextBlock Text="Add storage mount" FontSize="18" FontWeight="SemiBold" />
+                    <StackPanel Spacing="10">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel>
+                                <TextBlock Text="Add storage" FontSize="18" FontWeight="SemiBold" />
+                                <TextBlock Classes="muted"
+                                           Text="Connect a cloud folder as a library"
+                                           FontSize="12" />
+                            </StackPanel>
+                            <Button Grid.Column="1"
+                                    Content="✕"
+                                    Command="{Binding CancelMountCommand}"
+                                    Padding="10,6" />
+                        </Grid>
                         <TextBox PlaceholderText="Mount name" Text="{Binding MountName}" />
                         <ComboBox ItemsSource="{Binding ProviderKinds}" SelectedItem="{Binding ProviderKind}" />
                         <TextBox PlaceholderText="Container/share SAS URL or endpoint" Text="{Binding Endpoint}" />
                         <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-                            <TextBox Grid.Column="0" PlaceholderText="Storage account name" Text="{Binding AccountName}" />
-                            <TextBox Grid.Column="1" PlaceholderText="Provider root folder (optional)" Text="{Binding RootPath}" />
+                            <TextBox Grid.Column="0" PlaceholderText="Account name" Text="{Binding AccountName}" />
+                            <TextBox Grid.Column="1" PlaceholderText="Root folder" Text="{Binding RootPath}" />
                         </Grid>
-                        <TextBox PlaceholderText="Account key or OAuth token (saved locally)"
+                        <TextBox PlaceholderText="Account key or OAuth token"
                                  PasswordChar="●"
                                  Text="{Binding Credential}" />
                         <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-                            <TextBox Grid.Column="0" PlaceholderText="Tenant (common)" Text="{Binding TenantId}" />
-                            <TextBox Grid.Column="1" PlaceholderText="Entra SPA client ID" Text="{Binding ClientId}" />
+                            <TextBox Grid.Column="0" PlaceholderText="Tenant" Text="{Binding TenantId}" />
+                            <TextBox Grid.Column="1" PlaceholderText="Entra client ID" Text="{Binding ClientId}" />
                         </Grid>
-                        <Grid ColumnDefinitions="Auto,Auto,Auto,*" ColumnSpacing="8">
-                            <Button Grid.Column="0" Content="Save mount" Command="{Binding SaveMountCommand}" />
-                            <Button Grid.Column="1" Content="Sign in" Command="{Binding SignInCommand}" />
-                            <Button Grid.Column="2" Content="Cancel" Command="{Binding CancelMountCommand}" />
-                            <ProgressBar Grid.Column="3" IsIndeterminate="True" IsVisible="{Binding IsBusy}" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                            <Button Grid.Column="0"
+                                    Classes="accent"
+                                    Content="Save mount"
+                                    Command="{Binding SaveMountCommand}" />
+                            <Button Grid.Column="1"
+                                    Content="Sign in"
+                                    Command="{Binding SignInCommand}" />
                         </Grid>
                     </StackPanel>
                 </Border>
 
-                <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
-                    <Button Grid.Column="0" Content="↑" Command="{Binding UpCommand}" />
+                <Grid Grid.Row="1"
+                      Margin="14,12,14,8"
+                      ColumnDefinitions="Auto,*,Auto"
+                      ColumnSpacing="10">
+                    <Button Grid.Column="0"
+                            Content="‹"
+                            FontSize="22"
+                            Command="{Binding UpCommand}"
+                            Padding="13,5" />
                     <TextBlock Grid.Column="1"
                                Text="{Binding CurrentLocation}"
                                VerticalAlignment="Center"
+                               FontSize="15"
                                FontWeight="SemiBold"
                                TextTrimming="CharacterEllipsis" />
-                    <Button Grid.Column="2" Content="Open" Command="{Binding OpenCommand}" />
+                    <ProgressBar Grid.Column="2"
+                                 Width="54"
+                                 IsIndeterminate="True"
+                                 IsVisible="{Binding IsBusy}" />
                 </Grid>
 
-                <Border Grid.Row="3" MinHeight="320" Background="#F2F2F2">
+                <ScrollViewer Grid.Row="2" Margin="8,0">
                     <ItemsControl ItemsSource="{Binding Items}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="core:MediaItem">
-                                <Button Click="OnItemClicked"
-                                        Tag="{Binding}"
-                                        Padding="0"
-                                        BorderThickness="0"
-                                        Background="Transparent"
-                                        HorizontalContentAlignment="Stretch">
-                                    <Grid ColumnDefinitions="28,*,Auto" Margin="4,7">
-                                        <TextBlock Grid.Column="0"
-                                                   Text="{Binding IsDirectory, Converter={x:Static views:BoolConverters.FolderOrFile}}" />
-                                        <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="2"
-                                                   Text="{Binding Size, Converter={x:Static views:SizeConverters.ByteSize}}"
-                                                   Opacity="0.65" />
-                                    </Grid>
-                                </Button>
+                                <Grid ColumnDefinitions="50,*" Margin="2,1">
+                                    <Button Grid.Column="0"
+                                            Click="OnItemActionClicked"
+                                            Tag="{Binding}"
+                                            Width="40"
+                                            Height="40"
+                                            Padding="0"
+                                            Background="#142A43">
+                                        <TextBlock Text="{Binding ., Converter={x:Static views:ItemConverters.Icon}}"
+                                                   FontSize="12"
+                                                   FontWeight="Bold"
+                                                   Foreground="#38BDF8"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Button>
+                                    <Button Grid.Column="1"
+                                            Classes="row"
+                                            Click="OnItemClicked"
+                                            Tag="{Binding}">
+                                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontSize="14"
+                                                           FontWeight="Medium"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Classes="muted"
+                                                           Text="{Binding ., Converter={x:Static views:ItemConverters.Detail}}"
+                                                           FontSize="11" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1"
+                                                       Classes="muted"
+                                                       Text="{Binding Size, Converter={x:Static views:SizeConverters.ByteSize}}"
+                                                       FontSize="11"
+                                                       VerticalAlignment="Center" />
+                                        </Grid>
+                                    </Button>
+                                </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                </Border>
+                </ScrollViewer>
 
-                <Border Grid.Row="4" Padding="14" CornerRadius="10" Background="#151C2C">
+                <Border Grid.Row="3"
+                        Margin="14,8,14,14"
+                        Padding="10"
+                        CornerRadius="18"
+                        Background="#101D30"
+                        BorderBrush="#22344C"
+                        BorderThickness="1">
                     <StackPanel Spacing="8">
-                        <TextBlock Text="{Binding SelectedSubtitleLabel}" TextTrimming="CharacterEllipsis" />
-                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Text="Subtitle offset (milliseconds)" FontSize="12" Opacity="0.65" />
-                                <NumericUpDown Value="{Binding SubtitleOffsetMilliseconds}"
-                                               Increment="100"
-                                               Minimum="-3600000"
-                                               Maximum="3600000" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Spacing="6">
-                                <Button Content="Choose subtitle…" Command="{Binding ChooseLocalSubtitleCommand}" />
-                                <Button Content="Auto" Command="{Binding ClearSubtitleCommand}" />
-                            </StackPanel>
+                        <ToggleButton IsChecked="{Binding IsSubtitleMenuOpen}"
+                                      Padding="2"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      HorizontalContentAlignment="Stretch">
+                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                                    <Border Width="36" Height="36" CornerRadius="12" Background="#2A214A">
+                                        <TextBlock Text="CC"
+                                                   Foreground="#C4B5FD"
+                                                   FontWeight="Bold"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Border>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="Subtitles" FontWeight="SemiBold" />
+                                        <TextBlock Classes="muted"
+                                                   Text="{Binding SelectedSubtitleLabel}"
+                                                   FontSize="11"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                <TextBlock Grid.Column="2"
+                                           Text="▼"
+                                           FontSize="11"
+                                           Foreground="#8493A9"
+                                           VerticalAlignment="Center" />
+                            </Grid>
+                        </ToggleButton>
+                        <StackPanel Margin="4,2" Spacing="9" IsVisible="{Binding IsSubtitleMenuOpen}">
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                                    <StackPanel>
+                                        <TextBlock Classes="muted" Text="Sync offset (ms)" FontSize="11" />
+                                        <NumericUpDown Value="{Binding SubtitleOffsetMilliseconds}"
+                                                       Increment="100"
+                                                       Minimum="-3600000"
+                                                       Maximum="3600000" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Classes="muted" Text="Font size (%)" FontSize="11" />
+                                        <NumericUpDown Value="{Binding SubtitleFontSizePercent}"
+                                                       Increment="10"
+                                                       Minimum="50"
+                                                       Maximum="200" />
+                                    </StackPanel>
+                                </Grid>
+                                <StackPanel>
+                                    <TextBlock Classes="muted" Text="Background opacity (%)" FontSize="11" />
+                                    <NumericUpDown Value="{Binding SubtitleBackgroundOpacityPercent}"
+                                                   Increment="10"
+                                                   Minimum="0"
+                                                   Maximum="100" />
+                                </StackPanel>
+                                <Button Content="Choose subtitle file"
+                                        Command="{Binding ChooseLocalSubtitleCommand}"
+                                        HorizontalAlignment="Stretch" />
+                                <Button Content="Use automatic subtitles"
+                                        Command="{Binding ClearSubtitleCommand}"
+                                        HorizontalAlignment="Stretch" />
+                        </StackPanel>
+                        <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+                            <Button Content="+ Add storage"
+                                    Command="{Binding ShowAddMountCommand}"
+                                    Padding="12,9" />
+                            <Button Grid.Column="1"
+                                    Classes="accent"
+                                    Content="Open selected"
+                                    Command="{Binding OpenCommand}"
+                                    HorizontalAlignment="Stretch" />
                         </Grid>
-                        <Button Content="▶ Play selected video"
-                                HorizontalAlignment="Stretch"
-                                Command="{Binding PlayCommand}" />
-                        <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Opacity="0.75" />
+                        <TextBlock Classes="muted"
+                                   Text="{Binding Status}"
+                                   FontSize="11"
+                                   Margin="4,0,4,2"
+                                   TextWrapping="Wrap" />
                     </StackPanel>
                 </Border>
             </Grid>
-        </ScrollViewer>
-    </Grid>
+        </Grid>
+    </Border>
 </UserControl>

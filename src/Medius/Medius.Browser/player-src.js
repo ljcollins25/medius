@@ -17,8 +17,9 @@ const ffmpegAssetVersion = "3";
 // Playback starts after this much media is ready; later pieces are longer for efficiency.
 const FIRST_SEGMENT_SECONDS = 5;
 const SEGMENT_SECONDS = 10;
-// How far conversion may run ahead of playback, and how much played media is kept behind it.
-const MAX_BUFFER_AHEAD_SECONDS = 90;
+const PREFETCH_SEGMENTS = 6;
+// Conversion continuously fills this many segments ahead while old media is evicted behind.
+const MAX_BUFFER_AHEAD_SECONDS = SEGMENT_SECONDS * PREFETCH_SEGMENTS;
 const KEEP_BEHIND_SECONDS = 30;
 
 export function loadMounts() {
@@ -115,6 +116,15 @@ export async function playVideo(uri, fileName, mode, subtitleWebVtt, embeddedSub
 export function setSubtitle(subtitleWebVtt) {
     subtitleRevision++;
     setSubtitleInternal(subtitleWebVtt);
+}
+
+export function setSubtitleStyle(fontSizePercent, backgroundOpacity) {
+    const size = Math.max(50, Math.min(200, fontSizePercent));
+    const opacity = Math.max(0, Math.min(1, backgroundOpacity));
+    document.documentElement.style.setProperty("--subtitle-font-size", `${size}%`);
+    document.documentElement.style.setProperty(
+        "--subtitle-background",
+        `rgba(0, 0, 0, ${opacity})`);
 }
 
 export function preparePlayback(fileName) {
@@ -373,7 +383,7 @@ async function runSegmentLoop(session, onStarted) {
                 && !session.subtitleWebVtt
                 && session.probe.hasSubtitles
                 && !session.embeddedSubtitleStarted
-                && position >= FIRST_SEGMENT_SECONDS + SEGMENT_SECONDS) {
+                && position >= FIRST_SEGMENT_SECONDS + (SEGMENT_SECONDS * 2)) {
                 session.embeddedSubtitleStarted = true;
                 const revision = subtitleRevision;
                 const embedded = await extractEmbeddedSubtitle(session.input.path);
@@ -580,8 +590,12 @@ function parseProbe(text) {
 
 function buildSegmentArgs(session, outputName, start, duration) {
     const args = ["-y"];
-    if (start > 0) args.push("-ss", String(start));
-    args.push("-i", session.input.path, "-t", String(duration), "-map", "0:v:0", "-map", "0:a:0?");
+    const preciseSeekSeconds = Math.min(start, 5);
+    const coarseSeekSeconds = Math.max(0, start - preciseSeekSeconds);
+    if (coarseSeekSeconds > 0) args.push("-ss", String(coarseSeekSeconds));
+    args.push("-i", session.input.path);
+    if (preciseSeekSeconds > 0) args.push("-ss", String(preciseSeekSeconds));
+    args.push("-t", String(duration), "-map", "0:v:0", "-map", "0:a:0?");
 
     if (session.probe.videoCodec === "h264") {
         args.push("-c:v", "copy");
@@ -608,7 +622,6 @@ function buildSegmentArgs(session, outputName, start, duration) {
 
     args.push(
         "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        "-reset_timestamps", "1",
         outputName);
     return args;
 }

@@ -58,4 +58,25 @@ public partial class MainView : UserControl
         eventArgs.Handled = true;
         _lastClickedItem = null;
     }
+
+    private void OnItemActionClicked(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (sender is not Button button || DataContext is not MainViewModel viewModel)
+        {
+            return;
+        }
+
+        var item = button.Tag as MediaItem
+            ?? button.DataContext as MediaItem
+            ?? (button.Content as StyledElement)?.DataContext as MediaItem;
+        if (item is null)
+        {
+            return;
+        }
+
+        viewModel.SelectedItem = item;
+        viewModel.OpenCommand.Execute(null);
+        eventArgs.Handled = true;
+        _lastClickedItem = null;
+    }
 }
