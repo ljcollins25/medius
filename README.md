@@ -9,7 +9,7 @@ Medius is a C# file browser and local-first media player. The UI is shared Avalo
 - OneDrive via Microsoft Graph OAuth
 - Hierarchical folder browsing and configurable provider root
 - Direct MP4/M4V/WebM playback
-- Local ffmpeg.wasm AVI/MKV transcoding, MOV/TS remuxing with fallback transcoding, and first embedded subtitle extraction
+- Segmented local ffmpeg.wasm AVI/MKV transcoding for faster startup, MOV/TS remuxing with fallback transcoding, and first embedded subtitle extraction
 - Adjacent `.vtt`, `.srt`, `.ass`, `.ssa`, and `.sub` discovery using names such as `Movie.en.srt`
 - Explicit local or cloud subtitle selection
 - Positive and negative subtitle offsets; SRT and VTT are converted to WebVTT before playback
@@ -27,7 +27,7 @@ Set-Location ..\..\..
 dotnet run --project src\Medius\Medius.Browser\Medius.Browser.csproj
 ```
 
-The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Browser conversion downloads the complete source into memory, so direct-play formats are strongly preferred for large files.
+The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Unsupported formats are converted into 15-second fragmented MP4 segments and playback starts after the first segment. The browser still downloads the complete source into memory, so direct-play formats are strongly preferred for large files.
 
 Use **File → Add storage mount** to attach a provider. Each mount requires a unique display name and appears as a folder at the explorer root. Browser mounts are stored under `medius.mounts.v1` in that origin's `localStorage`; desktop mounts are stored in `%LOCALAPPDATA%\Medius\mounts.json`. These records include credentials, so use a trusted local browser profile or OS account.
 

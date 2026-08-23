@@ -27,6 +27,11 @@ export async function playVideo(uri, fileName, mode, subtitleWebVtt, embeddedSub
     status().textContent = mode === "Direct" ? "Loading media…" : "Loading ffmpeg.wasm…";
     clearObjectUrls();
 
+    if (mode === "Transcode" && "MediaSource" in window) {
+        await playTranscodedSegments(uri, fileName, subtitleWebVtt, embeddedSubtitleOffsetMilliseconds);
+        return true;
+    }
+
     let source = uri;
     let extractedSubtitle;
     if (mode !== "Direct") {
@@ -106,6 +111,50 @@ export async function acquireToken(tenantId, clientId, scopes) {
 }
 
 async function convertForBrowser(uri, fileName, mode) {
+    await ensureFfmpegLoaded();
+
+    const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ".bin";
+    const inputName = `input${extension}`;
+    const outputName = "output.mp4";
+    ffmpegLog.length = 0;
+    await cleanupFfmpegFiles(inputName, outputName);
+    await ffmpeg.writeFile(inputName, await fetchFile(uri));
+
+    const extractedSubtitle = await extractEmbeddedSubtitle(inputName);
+    let exitCode = -1;
+    if (conversionStrategy(mode) === "remux") {
+        exitCode = await ffmpeg.exec([
+            "-y",
+            "-i", inputName,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c", "copy",
+            "-movflags", "+faststart",
+            outputName
+        ]);
+    }
+    if (exitCode !== 0) {
+        exitCode = await ffmpeg.exec([
+            "-y",
+            "-i", inputName,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            outputName
+        ]);
+    }
+    if (exitCode !== 0) throw conversionError();
+
+    const data = await ffmpeg.readFile(outputName);
+    mediaObjectUrl = URL.createObjectURL(new Blob([data.buffer], { type: "video/mp4" }));
+    await cleanupFfmpegFiles(inputName, outputName);
+    return { source: mediaObjectUrl, extractedSubtitle };
+}
+
+async function ensureFfmpegLoaded() {
     ffmpeg ??= new FFmpeg();
     if (!ffmpeg.loaded) {
         ffmpeg.on("log", ({ message }) => {
@@ -144,63 +193,158 @@ async function convertForBrowser(uri, fileName, mode) {
             clearTimeout(timeoutId);
         }
     }
+}
 
+async function playTranscodedSegments(uri, fileName, subtitleWebVtt, embeddedSubtitleOffsetMilliseconds) {
+    await ensureFfmpegLoaded();
     const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ".bin";
     const inputName = `input${extension}`;
-    const outputName = "output.mp4";
     ffmpegLog.length = 0;
-    await Promise.allSettled([
-        ffmpeg.deleteFile(inputName),
-        ffmpeg.deleteFile(outputName),
-        ffmpeg.deleteFile("embedded.vtt")
-    ]);
+    await cleanupFfmpegFiles(inputName);
     await ffmpeg.writeFile(inputName, await fetchFile(uri));
 
-    let extractedSubtitle;
+    const extractedSubtitle = await extractEmbeddedSubtitle(inputName);
+    const subtitle = subtitleWebVtt
+        ?? (extractedSubtitle
+            ? shiftWebVtt(extractedSubtitle, embeddedSubtitleOffsetMilliseconds)
+            : undefined);
+
+    const mediaSource = new MediaSource();
+    mediaObjectUrl = URL.createObjectURL(mediaSource);
+    const player = video();
+    player.pause();
+    player.replaceChildren();
+    player.src = mediaObjectUrl;
+    addSubtitleTrack(player, subtitle);
+    await once(mediaSource, "sourceopen");
+
+    const mimeType = "video/mp4";
+    if (!MediaSource.isTypeSupported(mimeType)) {
+        throw new Error(`This browser cannot play ${mimeType}.`);
+    }
+
+    const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+    const segmentSeconds = 15;
+    let segmentIndex = 0;
+    let started = false;
+    try {
+        while (true) {
+            const outputName = `segment-${segmentIndex}.mp4`;
+            await Promise.allSettled([ffmpeg.deleteFile(outputName)]);
+            status().textContent = `Converting segment ${segmentIndex + 1}…`;
+            const exitCode = await ffmpeg.exec([
+                "-y",
+                "-ss", String(segmentIndex * segmentSeconds),
+                "-i", inputName,
+                "-t", String(segmentSeconds),
+                "-map", "0:v:0",
+                "-map", "0:a:0?",
+                "-vf", "scale=w='min(1280,iw)':h=-2",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-profile:v", "baseline",
+                "-level:v", "3.1",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "-reset_timestamps", "1",
+                outputName
+            ]);
+            if (exitCode !== 0) {
+                if (!started) throw conversionError();
+                break;
+            }
+
+            const file = await ffmpeg.readFile(outputName);
+            await ffmpeg.deleteFile(outputName);
+            const mediaFragmentOffset = findMediaFragmentOffset(file);
+            if (mediaFragmentOffset < 0) {
+                if (!started) throw conversionError();
+                break;
+            }
+
+            sourceBuffer.timestampOffset = segmentIndex * segmentSeconds;
+            await appendBuffer(
+                sourceBuffer,
+                segmentIndex === 0 ? file : file.slice(mediaFragmentOffset));
+            if (!started) {
+                started = true;
+                try {
+                    await player.play();
+                } catch (error) {
+                    if (error?.name !== "NotAllowedError") throw error;
+                    status().textContent = `${fileName} is ready — press Play.`;
+                }
+            }
+            segmentIndex++;
+        }
+
+        if (mediaSource.readyState === "open") mediaSource.endOfStream();
+        status().textContent = fileName;
+    } catch (error) {
+        if (mediaSource.readyState === "open") {
+            mediaSource.endOfStream("decode");
+        }
+        throw error;
+    } finally {
+        await cleanupFfmpegFiles(inputName);
+    }
+}
+
+async function extractEmbeddedSubtitle(inputName) {
     try {
         await ffmpeg.exec(["-y", "-i", inputName, "-map", "0:s:0", "-c:s", "webvtt", "embedded.vtt"]);
-        extractedSubtitle = new TextDecoder().decode(await ffmpeg.readFile("embedded.vtt"));
+        return new TextDecoder().decode(await ffmpeg.readFile("embedded.vtt"));
     } catch {
-        // A media file is not required to contain a subtitle stream.
+        return undefined;
     }
+}
 
-    let exitCode = -1;
-    if (conversionStrategy(mode) === "remux") {
-        exitCode = await ffmpeg.exec([
-            "-y",
-            "-i", inputName,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c", "copy",
-            "-movflags", "+faststart",
-            outputName
-        ]);
-    }
-    if (mode === "Transcode" || exitCode !== 0) {
-        exitCode = await ffmpeg.exec([
-            "-y",
-            "-i", inputName,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-c:a", "aac",
-            "-movflags", "+faststart",
-            outputName
-        ]);
-    }
-    if (exitCode !== 0) {
-        throw new Error(`ffmpeg.wasm could not convert this media file.\n${ffmpegLog.slice(-5).join("\n")}`);
-    }
-
-    const data = await ffmpeg.readFile(outputName);
-    mediaObjectUrl = URL.createObjectURL(new Blob([data.buffer], { type: "video/mp4" }));
+async function cleanupFfmpegFiles(...names) {
     await Promise.allSettled([
-        ffmpeg.deleteFile(inputName),
-        ffmpeg.deleteFile(outputName),
+        ...names.map(name => ffmpeg.deleteFile(name)),
         ffmpeg.deleteFile("embedded.vtt")
     ]);
-    return { source: mediaObjectUrl, extractedSubtitle };
+}
+
+function appendBuffer(sourceBuffer, data) {
+    return new Promise((resolve, reject) => {
+        sourceBuffer.addEventListener("updateend", resolve, { once: true });
+        sourceBuffer.addEventListener(
+            "error",
+            () => reject(new Error("The browser rejected a converted media segment.")),
+            { once: true });
+        sourceBuffer.appendBuffer(data);
+    });
+}
+
+function findMediaFragmentOffset(data) {
+    for (let index = 4; index + 4 <= data.length; index++) {
+        if (data[index] === 0x6d
+            && data[index + 1] === 0x6f
+            && data[index + 2] === 0x6f
+            && data[index + 3] === 0x66) {
+            return index - 4;
+        }
+    }
+
+    return -1;
+}
+
+function once(target, eventName) {
+    return new Promise((resolve, reject) => {
+        target.addEventListener(eventName, resolve, { once: true });
+        target.addEventListener(
+            "error",
+            () => reject(new Error(`MediaSource ${eventName} failed.`)),
+            { once: true });
+    });
+}
+
+function conversionError() {
+    return new Error(`ffmpeg.wasm could not convert this media file.\n${ffmpegLog.slice(-5).join("\n")}`);
 }
 
 function addSubtitleTrack(player, webVtt) {

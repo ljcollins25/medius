@@ -9,10 +9,14 @@ namespace Medius.Views;
 
 public partial class MainView : UserControl
 {
+    private DateTime _lastItemClick;
+    private MediaItem? _lastClickedItem;
+
     public MainView()
     {
         InitializeComponent();
     }
+
 
     private void OnItemClicked(object? sender, RoutedEventArgs eventArgs)
     {
@@ -30,9 +34,20 @@ public partial class MainView : UserControl
             return;
         }
 
-        viewModel.Status = $"Opening {item.Name}…";
         viewModel.SelectedItem = item;
+        var now = DateTime.UtcNow;
+        var isDoubleClick = Equals(item, _lastClickedItem)
+            && now - _lastItemClick <= TimeSpan.FromMilliseconds(500);
+        _lastClickedItem = item;
+        _lastItemClick = now;
+        if (!isDoubleClick)
+        {
+            return;
+        }
+
+        viewModel.Status = $"Opening {item.Name}…";
         viewModel.OpenCommand.Execute(null);
         eventArgs.Handled = true;
+        _lastClickedItem = null;
     }
 }
