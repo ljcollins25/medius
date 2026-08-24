@@ -340,7 +340,7 @@
     {
         if (ConsumeSuppressedClick()) return;
         VM.SelectedItem = item;
-        if (MediaTypes.IsSubtitle(item))
+        if (item.IsDirectory || MediaTypes.IsSubtitle(item))
         {
             VM.OpenCommand.Execute(null);
             return;
