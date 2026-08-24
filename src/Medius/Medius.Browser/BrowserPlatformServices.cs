@@ -24,6 +24,7 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         string? mediaKey = null,
         int maxWidth = 854,
         long convertedCacheLimitBytes = 536870912,
+        bool convertWholeFile = false,
         CancellationToken cancellationToken = default) =>
         _ = await PlayVideoAsync(
             plan.Content.Uri.ToString(),
@@ -35,7 +36,8 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
             endSeconds ?? -1,
             mediaKey,
             maxWidth,
-            (double)convertedCacheLimitBytes);
+            (double)convertedCacheLimitBytes,
+            convertWholeFile);
 
     public async Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default)
     {
@@ -84,7 +86,8 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         double endSeconds,
         string? mediaKey,
         int maxWidth,
-        double convertedCacheLimitBytes);
+        double convertedCacheLimitBytes,
+        bool convertWholeFile);
 
     [JSImport("pickSubtitle", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.String>>]

@@ -30,6 +30,7 @@ public interface IPlaybackHost
         string? mediaKey = null,
         int maxWidth = 854,
         long convertedCacheLimitBytes = 536870912,
+        bool convertWholeFile = false,
         CancellationToken cancellationToken = default);
 
     Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default);
@@ -115,6 +116,7 @@ internal sealed class UnsupportedPlaybackHost : IPlaybackHost
         string? mediaKey = null,
         int maxWidth = 854,
         long convertedCacheLimitBytes = 536870912,
+        bool convertWholeFile = false,
         CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("HTML5 playback is available in the browser head.");
 

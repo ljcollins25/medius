@@ -117,7 +117,55 @@ body {
     to { transform: rotate(360deg); }
 }
 
+#player-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+#player-activity {
+    flex: 0 0 auto;
+    min-width: 78px;
+    padding: 6px 10px;
+    color: #dcecff;
+    background: #18314c;
+    border: 1px solid #294a6b;
+    border-radius: 999px;
+    font-size: .72rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+#player-activity[data-stage="downloading"] {
+    color: #bae6fd;
+    background: #0c3348;
+    border-color: #0ea5e9;
+}
+
+#player-activity[data-stage="converting"] {
+    color: #fde68a;
+    background: #3c2e0a;
+    border-color: #d97706;
+}
+
+#player-activity[data-stage="playing"],
+#player-activity[data-stage="buffered"] {
+    color: #bbf7d0;
+    background: #123727;
+    border-color: #22c55e;
+}
+
+#player-activity[data-stage="error"] {
+    color: #fecaca;
+    background: #43191c;
+    border-color: #ef4444;
+}
+
 #player-status {
+    min-width: 0;
     justify-self: start;
     min-height: 28px;
     max-width: 100%;
@@ -128,8 +176,8 @@ body {
     border: 1px solid #1d3048;
     border-radius: 999px;
     font-size: .78rem;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.35;
+    white-space: normal;
 }
 
 .loading-splash {
@@ -253,12 +301,26 @@ body {
         font-size: 1.1rem;
     }
 
+    .player-preview-meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    #player-preview-activity {
+        color: #93a4ba;
+        font-size: .72rem;
+        font-weight: 700;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+    }
+
     #player-shell.collapsed {
         grid-template-rows: auto;
     }
 
     #player-shell.collapsed #player-stage,
-    #player-shell.collapsed #player-status {
+    #player-shell.collapsed #player-status-row {
         display: none;
     }
 

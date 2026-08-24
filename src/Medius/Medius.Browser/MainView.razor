@@ -231,6 +231,13 @@
                             <input type="number" step="128" min="0" max="16384" @bind="VM.ConvertedCacheSizeMb" />
                         </label>
                     </div>
+                    <label class="check-field">
+                        <input type="checkbox" @bind="VM.ConvertWholeFile" />
+                        <span>Convert full file before playback</span>
+                    </label>
+                    <span class="muted small">
+                        Uses more memory and starts later, but produces one fully buffered playable file.
+                    </span>
                     <div class="row-2col">
                         <span class="muted small">@VM.ConvertedCacheLabel</span>
                         <button class="btn" @onclick="() => VM.ClearConvertedCacheCommand.Execute(null)">Clear converted cache</button>

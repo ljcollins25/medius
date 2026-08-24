@@ -129,6 +129,9 @@ public partial class MainViewModel : ViewModelBase
     public partial double ConvertedCacheSizeMb { get; set; } = 512;
 
     [ObservableProperty]
+    public partial bool ConvertWholeFile { get; set; }
+
+    [ObservableProperty]
     public partial string ConvertedCacheLabel { get; set; } = "Converted cache";
 
     [ObservableProperty]
@@ -951,7 +954,8 @@ public partial class MainViewModel : ViewModelBase
                 endSeconds,
                 $"{mount.Id}|{video.Path}|{video.Size}|{video.LastModified:O}",
                 SelectedConversionResolution?.Width ?? 854,
-                (long)(Math.Max(0, ConvertedCacheSizeMb) * 1024 * 1024));
+                (long)(Math.Max(0, ConvertedCacheSizeMb) * 1024 * 1024),
+                ConvertWholeFile);
             if (requestId != _playbackRequestId) return;
 
             _playingVideo = video;

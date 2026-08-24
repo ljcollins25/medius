@@ -21,7 +21,10 @@
                     aria-expanded="false"
                     aria-controls="player-stage">
                 <span>Video preview</span>
-                <span id="player-preview-toggle-icon">▲</span>
+                <span class="player-preview-meta">
+                    <span id="player-preview-activity">Idle</span>
+                    <span id="player-preview-toggle-icon">▲</span>
+                </span>
             </button>
             <div id="player-stage">
                 <video id="media-player" controls playsinline></video>
@@ -30,7 +33,10 @@
                     <div id="player-loading-text">Loading media…</div>
                 </div>
             </div>
-            <div id="player-status">Select a video from the browser.</div>
+            <div id="player-status-row">
+                <span id="player-activity" data-stage="idle">Idle</span>
+                <div id="player-status">Select a video from the browser.</div>
+            </div>
         </section>
     </main>
     <div id="sync-qr-overlay" hidden>

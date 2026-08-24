@@ -8,12 +8,15 @@ let subtitleObjectUrl;
 let ffmpegLogSink;
 let segmentedActive = false;
 let activeSegmentLoop;
+let wholeFileProgress;
+let activeDownloadController;
 let playbackGeneration = 0;
 let subtitleRevision = 0;
 const ffmpegLog = [];
 
 const video = () => document.getElementById("media-player");
 const status = () => document.getElementById("player-status");
+const activity = () => document.getElementById("player-activity");
 const mountsKey = "medius.mounts.v1";
 const ffmpegAssetVersion = "3";
 const offlineCacheName = "medius-media-v1";
@@ -342,6 +345,8 @@ export function conversionStrategy(mode) {
 
 function beginPlaybackTransition(fileName, message) {
     const generation = ++playbackGeneration;
+    activeDownloadController?.abort();
+    activeDownloadController = undefined;
     window.setPlayerPreviewExpanded?.(true);
     const player = video();
     player.pause();
@@ -357,7 +362,7 @@ function beginPlaybackTransition(fileName, message) {
         segmentedActive = false;
     }
 
-    status().textContent = message;
+    setPlayerStatus(message.startsWith("Loading media") ? "Loading" : "Preparing", message);
     showLoading(`${message} ${fileName}`);
     return generation;
 }
@@ -372,6 +377,17 @@ function hideLoading() {
     document.getElementById("player-loading").hidden = true;
 }
 
+function setPlayerStatus(stage, detail) {
+    const activityElement = activity();
+    if (activityElement) {
+        activityElement.textContent = stage;
+        activityElement.dataset.stage = stage.toLowerCase();
+    }
+    const previewActivity = document.getElementById("player-preview-activity");
+    if (previewActivity) previewActivity.textContent = stage;
+    status().textContent = detail;
+}
+
 export async function playVideo(
     uri,
     fileName,
@@ -382,7 +398,8 @@ export async function playVideo(
     endSeconds = -1,
     mediaKey = null,
     maxWidth = 854,
-    convertedCacheLimitBytes = 536870912) {
+    convertedCacheLimitBytes = 536870912,
+    convertWholeFile = false) {
     const previousSegmentLoop = activeSegmentLoop;
     const generation = beginPlaybackTransition(
         fileName,
@@ -392,7 +409,7 @@ export async function playVideo(
         await previousSegmentLoop?.catch(() => {});
         if (generation !== playbackGeneration) return false;
 
-        if (mode === "Transcode" && "MediaSource" in window) {
+        if (mode === "Transcode" && !convertWholeFile && "MediaSource" in window) {
             await playTranscodedSegments(
                 uri,
                 fileName,
@@ -409,10 +426,16 @@ export async function playVideo(
 
         let source = uri;
         let extractedSubtitle;
+        let conversionSummary;
         if (mode !== "Direct") {
             segmentedActive = true;
             try {
-                ({ source, extractedSubtitle } = await convertForBrowser(uri, fileName, mode));
+                ({ source, extractedSubtitle, conversionSummary } = await convertForBrowser(
+                    uri,
+                    fileName,
+                    mode,
+                    maxWidth,
+                    generation));
             } finally {
                 if (generation === playbackGeneration) segmentedActive = false;
             }
@@ -429,12 +452,18 @@ export async function playVideo(
         setSubtitleInternal(subtitle);
         await player.play();
         hideLoading();
-        status().textContent = fileName;
+        setPlayerStatus(
+            "Playing",
+            conversionSummary
+                ? `${fileName} — fully converted ${formatBytes(conversionSummary.convertedBytes)}`
+                    + ` · downloaded ${formatBytes(conversionSummary.downloadedBytes)}`
+                    + `${formatTotalBytes(conversionSummary.totalBytes)}`
+                : fileName);
         return true;
     } catch (error) {
         if (generation === playbackGeneration) {
             hideLoading();
-            status().textContent = error?.message ?? String(error);
+            setPlayerStatus("Error", error?.message ?? String(error));
         }
         throw error;
     }
@@ -516,42 +545,90 @@ export async function acquireToken(tenantId, clientId, scopes) {
     return result.access_token;
 }
 
-// Whole-file conversion, used for containers that only need a remux.
-async function convertForBrowser(uri, fileName, mode) {
-    await ensureFfmpegLoaded();
+// Whole-file conversion is used for remuxing and when the user explicitly chooses
+// to finish conversion before playback.
+async function convertForBrowser(uri, fileName, mode, maxWidth, generation) {
+    let downloadedBytes = 0;
+    let totalBytes = 0;
+    let currentChunkBytes = 0;
+    const download = downloadSource(uri, (downloaded, total, currentChunk) => {
+        downloadedBytes = downloaded;
+        totalBytes = total;
+        currentChunkBytes = currentChunk;
+        if (generation !== playbackGeneration) return;
+        const detail = describeDownload(fileName, downloaded, total, currentChunk);
+        setPlayerStatus("Downloading", detail);
+        showLoading(detail);
+    });
+    const [, blob] = await Promise.all([ensureFfmpegLoaded(), download]);
+    if (generation !== playbackGeneration) {
+        throw new Error("Playback was replaced.");
+    }
 
     const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ".bin";
     const inputName = `input${extension}`;
     const outputName = "output.mp4";
     ffmpegLog.length = 0;
     await cleanupFfmpegFiles(inputName, outputName);
-    await ffmpeg.writeFile(inputName, new Uint8Array(await (await fetch(uri)).arrayBuffer()));
+    await ffmpeg.writeFile(inputName, new Uint8Array(await blob.arrayBuffer()));
 
     const extractedSubtitle = await extractEmbeddedSubtitle(inputName);
+    const progressState = {
+        generation,
+        fileName,
+        downloadedBytes,
+        totalBytes,
+        currentChunkBytes
+    };
+    wholeFileProgress = progressState;
+    setPlayerStatus(
+        "Converting",
+        `${fileName} — downloaded ${formatBytes(downloadedBytes)}${formatTotalBytes(totalBytes)} · converted 0%`);
+    showLoading(`Converting full file… ${fileName}`);
     let exitCode = -1;
-    if (conversionStrategy(mode) === "remux") {
-        exitCode = await ffmpeg.exec([
-            "-y", "-i", inputName,
-            "-map", "0:v:0", "-map", "0:a:0?",
-            "-c", "copy", "-movflags", "+faststart",
-            outputName
-        ], 180000);
-    }
-    if (exitCode !== 0) {
-        exitCode = await ffmpeg.exec([
-            "-y", "-i", inputName,
-            "-map", "0:v:0", "-map", "0:a:0?",
-            "-c:v", "libx264", "-preset", "veryfast",
-            "-c:a", "aac", "-movflags", "+faststart",
-            outputName
-        ], 600000);
+    try {
+        if (conversionStrategy(mode) === "remux") {
+            exitCode = await ffmpeg.exec([
+                "-y", "-i", inputName,
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-c", "copy", "-movflags", "+faststart",
+                outputName
+            ], 180000);
+        }
+        if (exitCode !== 0) {
+            const args = [
+                "-y", "-i", inputName,
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "30",
+                "-pix_fmt", "yuv420p"
+            ];
+            if (maxWidth > 0) {
+                args.push("-vf", `scale=w='trunc(min(${maxWidth},iw)/2)*2':h=-2`);
+            } else {
+                args.push("-vf", "scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'");
+            }
+            args.push("-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", outputName);
+            exitCode = await ffmpeg.exec(args, 600000);
+        }
+    } finally {
+        if (wholeFileProgress === progressState) wholeFileProgress = undefined;
     }
     if (exitCode !== 0) throw conversionError();
 
     const data = await ffmpeg.readFile(outputName);
     mediaObjectUrl = URL.createObjectURL(new Blob([data.buffer], { type: "video/mp4" }));
     await cleanupFfmpegFiles(inputName, outputName);
-    return { source: mediaObjectUrl, extractedSubtitle };
+    return {
+        source: mediaObjectUrl,
+        extractedSubtitle,
+        conversionSummary: {
+            convertedBytes: data.byteLength,
+            downloadedBytes,
+            totalBytes
+        }
+    };
 }
 
 async function ensureFfmpegLoaded() {
@@ -567,8 +644,14 @@ async function ensureFfmpegLoaded() {
         ffmpegLogSink?.push(message);
     });
     instance.on("progress", ({ progress }) => {
-        if (!segmentedActive && Number.isFinite(progress)) {
-            status().textContent = `Converting locally… ${Math.max(0, Math.min(100, Math.round(progress * 100)))}%`;
+        if (wholeFileProgress
+            && wholeFileProgress.generation === playbackGeneration
+            && Number.isFinite(progress)) {
+            const percent = Math.max(0, Math.min(100, Math.round(progress * 100)));
+            setPlayerStatus(
+                "Converting",
+                `${wholeFileProgress.fileName} — downloaded ${formatBytes(wholeFileProgress.downloadedBytes)}`
+                + `${formatTotalBytes(wholeFileProgress.totalBytes)} · converted ${percent}%`);
         }
     });
 
@@ -644,6 +727,9 @@ async function playTranscodedSegments(
         endSeconds: endSeconds > startSeconds ? endSeconds : null,
         uri,
         extension,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        currentDownloadChunkBytes: 0,
         input: null
     };
 
@@ -688,6 +774,7 @@ async function runSegmentLoop(session, onStarted) {
 
             if (isFullyConverted(session, position)) {
                 await finishStream(session);
+                setPlayerStatus("Buffered", `${session.fileName} — conversion complete`);
                 reportStatus(session, position, playing);
                 if (!await waitForSeek(session)) return;
                 continue;
@@ -756,6 +843,12 @@ async function convertSegment(session, start, duration) {
         if (Number.isNaN(session.probe.durationSeconds) && cached.probe) {
             session.probe = cached.probe;
         }
+        session.lastSegmentBytes = cached.data.byteLength;
+        session.lastSegmentDuration = duration;
+        session.lastSegmentSource = "cached";
+        setPlayerStatus(
+            "Buffering",
+            `${session.fileName} — loading cached ${duration}s segment (${formatBytes(cached.data.byteLength)})`);
         return cached.data;
     }
 
@@ -773,6 +866,14 @@ async function convertSegment(session, start, duration) {
     const capture = Number.isNaN(session.probe.durationSeconds);
     const lines = [];
     ffmpegLogSink = capture ? lines : undefined;
+    const previousSegment = session.lastSegmentBytes
+        ? ` · previous ${session.lastSegmentDuration}s segment ${formatBytes(session.lastSegmentBytes)}`
+        : "";
+    setPlayerStatus(
+        "Converting",
+        `${session.fileName} — converting ${duration}s segment at ${formatClock(start)}`
+        + ` · downloaded ${formatBytes(session.downloadedBytes)}${formatTotalBytes(session.totalBytes)}`
+        + previousSegment);
     let exitCode;
     try {
         exitCode = await ffmpeg.exec(buildSegmentArgs(session, outputName, start, duration), 180000);
@@ -786,6 +887,9 @@ async function convertSegment(session, start, duration) {
     }
 
     const data = await ffmpeg.readFile(outputName);
+    session.lastSegmentBytes = data.byteLength;
+    session.lastSegmentDuration = duration;
+    session.lastSegmentSource = "converted";
     await Promise.allSettled([ffmpeg.deleteFile(outputName)]);
     if (findMediaFragmentOffset(data) < 0) return null;
 
@@ -954,6 +1058,7 @@ async function beginPlayback(session) {
         if (error?.name !== "NotAllowedError") throw error;
     }
     hideLoading();
+    setPlayerStatus("Playing", `${session.fileName} — playback started`);
 }
 
 function attachSeekListener(session) {
@@ -1021,6 +1126,11 @@ async function waitForBufferRoom(session, position) {
             return true;
         }
 
+        const bufferedAhead = Math.max(0, position - session.player.currentTime);
+        setPlayerStatus(
+            "Buffered",
+            `${session.fileName} — ${bufferedAhead.toFixed(0)}s ready ahead`
+            + ` · downloaded ${formatBytes(session.downloadedBytes)}${formatTotalBytes(session.totalBytes)}`);
         reportStatus(session, position, true);
         await delay(250);
     }
@@ -1047,7 +1157,10 @@ function evictPlayedMedia(session, aggressive) {
 
 function reportStatus(session, convertedSeconds, playing) {
     if (!playing) {
-        status().textContent = "Converting first segment…";
+        setPlayerStatus(
+            "Converting",
+            `${session.fileName} — converting first ${session.lastSegmentDuration ?? FIRST_SEGMENT_SECONDS}s segment`
+            + ` · downloaded ${formatBytes(session.downloadedBytes)}${formatTotalBytes(session.totalBytes)}`);
         return;
     }
 
@@ -1055,13 +1168,42 @@ function reportStatus(session, convertedSeconds, playing) {
     const total = Number.isFinite(session.probe.durationSeconds)
         ? ` of ${formatClock(session.probe.durationSeconds)}`
         : "";
+    const segment = session.lastSegmentBytes
+        ? ` · ${session.lastSegmentSource} ${session.lastSegmentDuration}s segment ${formatBytes(session.lastSegmentBytes)}`
+        : "";
     status().textContent =
-        `${session.fileName} — converted ${formatClock(convertedSeconds)}${total} (${ahead.toFixed(0)}s ahead)`;
+        `${session.fileName} — converted ${formatClock(convertedSeconds)}${total} (${ahead.toFixed(0)}s ahead)`
+        + ` · downloaded ${formatBytes(session.downloadedBytes)}${formatTotalBytes(session.totalBytes)}`
+        + segment;
 }
 
 function formatClock(seconds) {
     const total = Math.max(0, Math.round(seconds));
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit++;
+    }
+    return `${value.toFixed(value >= 100 || unit === 0 ? 0 : value >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+
+function formatTotalBytes(totalBytes) {
+    return totalBytes > 0 ? ` / ${formatBytes(totalBytes)}` : "";
+}
+
+function describeDownload(fileName, downloadedBytes, totalBytes, currentChunkBytes) {
+    const currentChunk = currentChunkBytes > 0
+        ? ` · current network chunk ${formatBytes(currentChunkBytes)}`
+        : "";
+    return `${fileName} — downloaded ${formatBytes(downloadedBytes)}`
+        + `${formatTotalBytes(totalBytes)}${currentChunk}`;
 }
 
 function parseProbe(text) {
@@ -1100,7 +1242,9 @@ function buildSegmentArgs(session, outputName, start, duration) {
             "-pix_fmt", "yuv420p");
         if (session.maxWidth) {
             // min() keeps smaller sources at their native size instead of upscaling them.
-            args.push("-vf", `scale=w='min(${session.maxWidth},iw)':h=-2`);
+            args.push("-vf", `scale=w='trunc(min(${session.maxWidth},iw)/2)*2':h=-2`);
+        } else {
+            args.push("-vf", "scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'");
         }
     }
 
@@ -1120,20 +1264,62 @@ function buildSegmentArgs(session, outputName, start, duration) {
 // instead of copying the whole download into the wasm heap.
 async function ensureSessionInput(session) {
     if (session.input) return;
-    status().textContent = "Loading media source…";
-    await ensureFfmpegLoaded();
+    const download = downloadSource(session.uri, (downloaded, total, currentChunk) => {
+        session.downloadedBytes = downloaded;
+        session.totalBytes = total;
+        session.currentDownloadChunkBytes = currentChunk;
+        if (!session.isCurrent()) return;
+        const detail = describeDownload(session.fileName, downloaded, total, currentChunk);
+        setPlayerStatus("Downloading", detail);
+        if (!session.player) showLoading(detail);
+    });
+    const [, blob] = await Promise.all([ensureFfmpegLoaded(), download]);
     if (!session.isCurrent()) return;
     const instance = ffmpeg;
-    session.input = await mountInput(session.uri, session.extension, session.generation, instance);
+    session.downloadedBytes = blob.size;
+    session.totalBytes ||= blob.size;
+    session.input = await mountInput(blob, session.extension, session.generation, instance);
 }
 
-async function mountInput(uri, extension, generation, instance) {
-    const response = await fetch(uri);
-    if (!response.ok) {
-        throw new Error(`Could not download the media (HTTP ${response.status}).`);
-    }
+async function downloadSource(uri, onProgress) {
+    const controller = new AbortController();
+    activeDownloadController = controller;
+    try {
+        const response = await fetch(uri, { signal: controller.signal });
+        if (!response.ok) {
+            throw new Error(`Could not download the media (HTTP ${response.status}).`);
+        }
 
-    const blob = await response.blob();
+        const total = Number(response.headers.get("Content-Length") ?? 0);
+        if (!response.body) {
+            const blob = await response.blob();
+            onProgress(blob.size, total || blob.size, blob.size);
+            return blob;
+        }
+
+        const reader = response.body.getReader();
+        const chunks = [];
+        let downloaded = 0;
+        let lastReport = 0;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            downloaded += value.byteLength;
+            const now = performance.now();
+            if (now - lastReport >= 100 || downloaded === total) {
+                onProgress(downloaded, total, value.byteLength);
+                lastReport = now;
+            }
+        }
+        onProgress(downloaded, total || downloaded, chunks.at(-1)?.byteLength ?? 0);
+        return new Blob(chunks, { type: response.headers.get("Content-Type") ?? "application/octet-stream" });
+    } finally {
+        if (activeDownloadController === controller) activeDownloadController = undefined;
+    }
+}
+
+async function mountInput(blob, extension, generation, instance) {
     const name = `input${extension}`;
     const mountPoint = `/medius-${generation}`;
     try {
