@@ -191,7 +191,6 @@ public sealed class MountPersistenceTests
         PlatformServices.Playback = playback;
         var viewModel = new MainViewModel();
         await WaitForAsync(() => viewModel.Playlists.Count == 2);
-        viewModel.ConvertWholeFile = true;
         viewModel.SelectedItem = new MediaItem(
             "movies/clip.mp4",
             "clip.mp4",
@@ -209,7 +208,6 @@ public sealed class MountPersistenceTests
 
         Assert.Equal(12.5, playback.StartSeconds);
         Assert.Equal(42, playback.EndSeconds);
-        Assert.True(playback.ConvertWholeFile);
         var persisted = AppStateSerializer.FromJson(store.Json!);
         var history = persisted.Playlists.Single(item => item.Kind == PlaylistKind.History);
         Assert.Equal("movies/clip.mp4", Assert.Single(history.Entries).Path);
@@ -396,8 +394,6 @@ public sealed class MountPersistenceTests
 
             public double? EndSeconds { get; private set; }
 
-            public bool ConvertWholeFile { get; private set; }
-
             public Task StopAndShowLoadingAsync(string fileName, CancellationToken cancellationToken = default) =>
                 Task.CompletedTask;
 
@@ -410,12 +406,10 @@ public sealed class MountPersistenceTests
                 string? mediaKey = null,
                 int maxWidth = 854,
                 long convertedCacheLimitBytes = 536870912,
-                bool convertWholeFile = false,
                 CancellationToken cancellationToken = default)
             {
                 StartSeconds = startSeconds;
                 EndSeconds = endSeconds;
-                ConvertWholeFile = convertWholeFile;
                 return Task.CompletedTask;
             }
 

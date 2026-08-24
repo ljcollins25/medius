@@ -3,16 +3,26 @@ import QRCode from "qrcode";
 import { BrowserQRCodeReader } from "@zxing/browser";
 
 let ffmpeg;
+let bgFfmpeg;
 let mediaObjectUrl;
 let subtitleObjectUrl;
 let ffmpegLogSink;
+let bgFfmpegLogSink;
 let segmentedActive = false;
 let activeSegmentLoop;
 let wholeFileProgress;
 let activeDownloadController;
 let playbackGeneration = 0;
 let subtitleRevision = 0;
+let conversionQueueSequence = 0;
+let backgroundQueueRunner;
+let activeBackgroundJob;
+let convertedCacheMutation = Promise.resolve();
+let browserAssemblyExports;
+const remoteProgressSinks = new Map();
 const ffmpegLog = [];
+const bgFfmpegLog = [];
+const conversionQueue = [];
 
 const video = () => document.getElementById("media-player");
 const status = () => document.getElementById("player-status");
@@ -30,24 +40,221 @@ const PREFETCH_SEGMENTS = 6;
 // Conversion continuously fills this many segments ahead while old media is evicted behind.
 const MAX_BUFFER_AHEAD_SECONDS = SEGMENT_SECONDS * PREFETCH_SEGMENTS;
 const KEEP_BEHIND_SECONDS = 30;
+const RANGE_LOG_PREFIX = "[medius-range]";
 
 export function loadMounts() {
     return localStorage.getItem(mountsKey);
 }
 
 export async function clearConvertedCache() {
-    await caches.delete(convertedCacheName);
-    localStorage.removeItem(convertedCacheIndexKey);
+    await withConvertedCacheLock(async () => {
+        await caches.delete(convertedCacheName);
+        localStorage.removeItem(convertedCacheIndexKey);
+    });
     return true;
 }
 
 export async function getConvertedCacheUsage() {
+    await convertedCacheMutation;
     return readConvertedCacheIndex()
         .reduce((total, item) => total + item.size, 0);
 }
 
 export function saveMounts(json) {
     localStorage.setItem(mountsKey, json);
+}
+
+export async function enqueueConversion(
+    uri,
+    fileName,
+    mediaKey,
+    maxWidth = 854,
+    convertedCacheLimitBytes = 536870912,
+    sourceSizeBytes = 0,
+    deferStart = false) {
+    const normalizedWidth = Math.max(0, Number(maxWidth) || 0);
+    const existing = conversionQueue.find(job =>
+        job.kind === "manual"
+        && job.mediaKey === mediaKey
+        && job.maxWidth === normalizedWidth
+        && ["queued", "downloading", "converting"].includes(job.state));
+    if (existing) {
+        return existing.id;
+    }
+    const completed = conversionQueue.find(job =>
+        job.kind === "manual"
+        && job.mediaKey === mediaKey
+        && job.maxWidth === normalizedWidth
+        && job.state === "completed");
+    if (completed) {
+        if (await getFullyCachedDuration(mediaKey, normalizedWidth) !== null) {
+            return completed.id;
+        }
+        conversionQueue.splice(conversionQueue.indexOf(completed), 1);
+        await releaseQueuedUriResolver(completed.id);
+    }
+
+    const cachedDuration = await getFullyCachedDuration(mediaKey, normalizedWidth);
+    const job = {
+        id: `conversion-${++conversionQueueSequence}`,
+        kind: "manual",
+        uri,
+        fileName,
+        mediaKey,
+        maxWidth: normalizedWidth,
+        convertedCacheLimitBytes: Math.max(0, Number(convertedCacheLimitBytes) || 0),
+        sourceSizeBytes: Math.max(0, Number(sourceSizeBytes) || 0),
+        state: cachedDuration !== null ? "completed" : "queued",
+        downloadedBytes: 0,
+        totalBytes: 0,
+        currentChunkBytes: 0,
+        convertedSeconds: cachedDuration ?? 0,
+        durationSeconds: cachedDuration ?? 0,
+        currentSegmentBytes: 0,
+        errorMessage: null,
+        cancelled: false,
+        abortController: null,
+        session: null
+    };
+    conversionQueue.push(job);
+    if (cachedDuration === null && !deferStart) {
+        void ensureBackgroundQueueRunner();
+    }
+
+    return job.id;
+}
+
+export async function startConversionQueue() {
+    void ensureBackgroundQueueRunner();
+    return true;
+}
+
+export async function getConversionQueue() {
+    return JSON.stringify(conversionQueue.map(serializeConversionJob));
+}
+
+export async function cancelConversion(jobId) {
+    const job = conversionQueue.find(item => item.id === jobId);
+    if (!job) {
+        return false;
+    }
+
+    job.cancelled = true;
+    if (job.kind === "playback") {
+        job.state = "cancelled";
+        if (job.session) {
+            job.session.backgroundCacheEnabled = false;
+            job.session = null;
+        }
+        return true;
+    }
+
+    if (job.state === "queued") {
+        job.state = "cancelled";
+        await releaseQueuedUriResolver(job.id);
+        return true;
+    }
+
+    job.state = "cancelled";
+    job.abortController?.abort();
+    if (activeBackgroundJob === job && bgFfmpeg) {
+        bgFfmpeg.terminate();
+        bgFfmpeg = undefined;
+        bgFfmpegLogSink = undefined;
+    }
+    return true;
+}
+
+export async function clearCompletedConversions() {
+    for (let index = conversionQueue.length - 1; index >= 0; index--) {
+        if (["completed", "error", "cancelled"].includes(conversionQueue[index].state)) {
+            await releaseQueuedUriResolver(conversionQueue[index].id);
+            conversionQueue.splice(index, 1);
+        }
+    }
+    return true;
+}
+
+function serializeConversionJob(job) {
+    return {
+        id: job.id,
+        fileName: job.fileName,
+        mediaKey: job.mediaKey,
+        state: job.state,
+        downloadedBytes: Math.round(job.downloadedBytes ?? 0),
+        totalBytes: Math.round(job.totalBytes ?? 0),
+        currentChunkBytes: Math.round(job.currentChunkBytes ?? 0),
+        convertedSeconds: Number(job.convertedSeconds ?? 0),
+        durationSeconds: Number(job.durationSeconds ?? 0),
+        currentSegmentBytes: Math.round(job.currentSegmentBytes ?? 0),
+        errorMessage: job.errorMessage ?? null
+    };
+}
+
+async function getFullyCachedDuration(mediaKey, maxWidth) {
+    if (!("caches" in window)) {
+        return null;
+    }
+
+    const first = await readConvertedSegment([
+        "v2",
+        mediaKey,
+        (0).toFixed(3),
+        FIRST_SEGMENT_SECONDS.toFixed(3),
+        maxWidth
+    ].join("|")).catch(() => null);
+    if (!first?.probe || !Number.isFinite(first.probe.durationSeconds)) {
+        return null;
+    }
+
+    const cache = await caches.open(convertedCacheName);
+    const durationSeconds = first.probe.durationSeconds;
+    let position = 0;
+    let duration = FIRST_SEGMENT_SECONDS;
+    while (position < durationSeconds - 0.2) {
+        const key = ["v2", mediaKey, position.toFixed(3), duration.toFixed(3), maxWidth].join("|");
+        if (!await cache.match(convertedSegmentRequest(key))) {
+            return null;
+        }
+        position += duration;
+        duration = SEGMENT_SECONDS;
+    }
+
+    return durationSeconds;
+}
+
+async function ensureBackgroundQueueRunner() {
+    if (backgroundQueueRunner) {
+        return backgroundQueueRunner;
+    }
+
+    backgroundQueueRunner = (async () => {
+        while (true) {
+            const next = conversionQueue.find(job =>
+                job.kind === "manual"
+                && job.state === "queued"
+                && !job.cancelled);
+            if (!next) {
+                return;
+            }
+
+            activeBackgroundJob = next;
+            try {
+                await runManualConversionJob(next);
+            } finally {
+                if (activeBackgroundJob === next) {
+                    activeBackgroundJob = undefined;
+                }
+            }
+        }
+    })().finally(() => {
+        backgroundQueueRunner = undefined;
+        if (conversionQueue.some(job => job.kind === "manual" && job.state === "queued" && !job.cancelled)) {
+            void ensureBackgroundQueueRunner();
+        }
+    });
+
+    return backgroundQueueRunner;
 }
 
 export async function cacheOfflineMedia(key, uri, bearerToken) {
@@ -399,7 +606,7 @@ export async function playVideo(
     mediaKey = null,
     maxWidth = 854,
     convertedCacheLimitBytes = 536870912,
-    convertWholeFile = false) {
+    sourceSizeBytes = 0) {
     const previousSegmentLoop = activeSegmentLoop;
     const generation = beginPlaybackTransition(
         fileName,
@@ -409,7 +616,7 @@ export async function playVideo(
         await previousSegmentLoop?.catch(() => {});
         if (generation !== playbackGeneration) return false;
 
-        if (mode === "Transcode" && !convertWholeFile && "MediaSource" in window) {
+        if (mode === "Transcode" && "MediaSource" in window) {
             await playTranscodedSegments(
                 uri,
                 fileName,
@@ -420,7 +627,8 @@ export async function playVideo(
                 endSeconds,
                 mediaKey,
                 maxWidth,
-                convertedCacheLimitBytes);
+                convertedCacheLimitBytes,
+                sourceSizeBytes);
             return true;
         }
 
@@ -545,8 +753,7 @@ export async function acquireToken(tenantId, clientId, scopes) {
     return result.access_token;
 }
 
-// Whole-file conversion is used for remuxing and when the user explicitly chooses
-// to finish conversion before playback.
+// Whole-file conversion is used for remuxing and MediaSource fallback paths.
 async function convertForBrowser(uri, fileName, mode, maxWidth, generation) {
     let downloadedBytes = 0;
     let totalBytes = 0;
@@ -639,6 +846,7 @@ async function ensureFfmpegLoaded() {
     }
 
     instance.on("log", ({ message }) => {
+        if (handleRemoteProgressLog(message)) return;
         ffmpegLog.push(message);
         if (ffmpegLog.length > 40) ffmpegLog.shift();
         ffmpegLogSink?.push(message);
@@ -696,7 +904,8 @@ async function playTranscodedSegments(
     endSeconds,
     mediaKey,
     maxWidth,
-    convertedCacheLimitBytes) {
+    convertedCacheLimitBytes,
+    sourceSizeBytes) {
     segmentedActive = true;
 
     const extension = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ".bin";
@@ -718,6 +927,7 @@ async function playTranscodedSegments(
         maxWidth: Math.max(0, maxWidth),
         mediaKey: mediaKey ?? `${fileName}|${uri}`,
         convertedCacheLimitBytes: Math.max(0, convertedCacheLimitBytes),
+        sourceSizeBytes: Math.max(0, Number(sourceSizeBytes) || 0),
         needsInitSegment: true,
         seekTarget: null,
         mediaSource: null,
@@ -730,8 +940,12 @@ async function playTranscodedSegments(
         downloadedBytes: 0,
         totalBytes: 0,
         currentDownloadChunkBytes: 0,
-        input: null
+        input: null,
+        backgroundCacheEnabled: true,
+        backgroundCacheCompleted: false,
+        backgroundJob: null
     };
+    session.backgroundJob = createPlaybackBackgroundJob(session);
 
     // Hand control back as soon as playback starts; conversion continues in the background.
     let signalStarted;
@@ -750,9 +964,281 @@ async function playTranscodedSegments(
     await Promise.race([started, loop]);
 }
 
+function createPlaybackBackgroundJob(session) {
+    const job = {
+        id: `playback-${session.generation}`,
+        kind: "playback",
+        fileName: session.fileName,
+        mediaKey: session.mediaKey,
+        maxWidth: session.maxWidth,
+        convertedCacheLimitBytes: session.convertedCacheLimitBytes,
+        state: "downloading",
+        downloadedBytes: 0,
+        totalBytes: 0,
+        currentChunkBytes: 0,
+        convertedSeconds: session.startSeconds,
+        durationSeconds: 0,
+        currentSegmentBytes: 0,
+        errorMessage: null,
+        cancelled: false,
+        abortController: null,
+        session
+    };
+    conversionQueue.unshift(job);
+    return job;
+}
+
+function syncPlaybackBackgroundJob(session, state, convertedSeconds = null) {
+    const job = session.backgroundJob;
+    if (!job || job.state === "cancelled") {
+        return;
+    }
+
+    if (state) {
+        job.state = state;
+    }
+    job.downloadedBytes = session.downloadedBytes;
+    job.totalBytes = session.totalBytes;
+    job.currentChunkBytes = session.currentDownloadChunkBytes;
+    job.currentSegmentBytes = session.lastSegmentBytes ?? 0;
+    if (Number.isFinite(session.probe.durationSeconds)) {
+        job.durationSeconds = session.probe.durationSeconds;
+    }
+    if (convertedSeconds !== null) {
+        job.convertedSeconds = Number.isFinite(job.durationSeconds) && job.durationSeconds > 0
+            ? Math.min(convertedSeconds, job.durationSeconds)
+            : convertedSeconds;
+    }
+}
+
+async function completePlaybackBackgroundJob(session, convertedSeconds) {
+    const job = session.backgroundJob;
+    if (!job || job.state === "cancelled") {
+        return;
+    }
+
+    const fullyCached = await isManualJobFullyCached(session);
+    syncPlaybackBackgroundJob(session, fullyCached ? "completed" : "error", convertedSeconds);
+    if (!fullyCached) {
+        job.errorMessage = "The converted cache limit is too small to retain the full file.";
+    } else if (session.input) {
+        const input = session.input;
+        session.input = null;
+        await releaseInput(input);
+    }
+    job.currentChunkBytes = 0;
+    session.backgroundCacheCompleted = true;
+    job.session = null;
+}
+
+async function finalizePlaybackBackgroundJob(session, cachePosition) {
+    const job = session.backgroundJob;
+    if (!job || ["completed", "cancelled", "error"].includes(job.state)) {
+        return;
+    }
+
+    if (session.backgroundCacheEnabled && isSourceFullyConverted(session, cachePosition)) {
+        await completePlaybackBackgroundJob(session, cachePosition);
+        return;
+    }
+
+    job.state = "cancelled";
+    job.session = null;
+}
+
+async function runManualConversionJob(job) {
+    const extension = job.fileName.includes(".") ? job.fileName.slice(job.fileName.lastIndexOf(".")) : ".bin";
+    const session = {
+        fileName: job.fileName,
+        uri: job.uri,
+        extension,
+        maxWidth: job.maxWidth,
+        mediaKey: job.mediaKey,
+        convertedCacheLimitBytes: job.convertedCacheLimitBytes,
+        sourceSizeBytes: job.sourceSizeBytes,
+        probe: { durationSeconds: Number.NaN, hasSubtitles: false },
+        downloadedBytes: 0,
+        totalBytes: 0,
+        currentDownloadChunkBytes: 0,
+        input: null
+    };
+
+    job.errorMessage = null;
+    job.currentSegmentBytes = 0;
+    job.currentChunkBytes = 0;
+    job.abortController = new AbortController();
+
+    try {
+        job.state = "downloading";
+        job.uri = await refreshQueuedConversionUri(job.id, job.uri);
+        if (job.cancelled) throw new DOMException("Cancelled", "AbortError");
+        const updateProgress = (progress, totalArg = 0, currentChunkArg = 0) => {
+            const downloaded = typeof progress === "number"
+                ? progress
+                : progress.downloadedBytes ?? progress.downloaded ?? 0;
+            const total = typeof progress === "number"
+                ? totalArg
+                : progress.totalBytes ?? progress.total ?? 0;
+            const currentChunk = typeof progress === "number"
+                ? currentChunkArg
+                : progress.currentChunkBytes ?? progress.currentChunk ?? 0;
+            job.state = "downloading";
+            job.downloadedBytes = downloaded;
+            job.totalBytes = total;
+            job.currentChunkBytes = currentChunk;
+            session.downloadedBytes = downloaded;
+            session.totalBytes = total;
+            session.currentDownloadChunkBytes = currentChunk;
+        };
+        const [instance, remote] = await Promise.all([
+            ensureBackgroundFfmpegLoaded(),
+            probeRangeSource(job.uri, job.abortController, job.sourceSizeBytes)
+        ]);
+        if (job.cancelled) throw new DOMException("Cancelled", "AbortError");
+        if (remote) {
+            updateProgress({
+                downloadedBytes: remote.initialBytes,
+                totalBytes: remote.totalBytes,
+                currentChunkBytes: remote.initialBytes
+            });
+            session.input = await mountRemoteInput(
+                job.uri,
+                extension,
+                `bg-${job.id}`,
+                instance,
+                remote.totalBytes,
+                updateProgress);
+        } else {
+            const blob = await downloadSource(job.uri, updateProgress, { controller: job.abortController });
+            if (job.cancelled) throw new DOMException("Cancelled", "AbortError");
+            session.downloadedBytes = blob.size;
+            session.totalBytes ||= blob.size;
+            job.downloadedBytes = blob.size;
+            job.totalBytes ||= blob.size;
+            job.currentChunkBytes = 0;
+            session.input = await mountInput(blob, extension, `bg-${job.id}`, instance);
+        }
+        if (job.cancelled) {
+            throw new DOMException("Cancelled", "AbortError");
+        }
+
+        job.state = "converting";
+        await probeBackgroundSessionInput(session);
+        if (Number.isFinite(session.probe.durationSeconds)) {
+            job.durationSeconds = session.probe.durationSeconds;
+        }
+        if (await isManualJobFullyCached(session)) {
+            job.convertedSeconds = job.durationSeconds;
+            job.state = "completed";
+            return;
+        }
+
+        let position = 0;
+        let duration = FIRST_SEGMENT_SECONDS;
+        while (!isFullyConverted(session, position)) {
+            if (job.cancelled) {
+                throw new DOMException("Cancelled", "AbortError");
+            }
+
+            const segment = await convertBackgroundSegment(session, position, duration, job);
+            if (job.cancelled) {
+                throw new DOMException("Cancelled", "AbortError");
+            }
+            if (!segment) {
+                if (position === 0) {
+                    throw conversionError(bgFfmpegLog);
+                }
+                session.probe.durationSeconds = Math.min(
+                    Number.isFinite(session.probe.durationSeconds) ? session.probe.durationSeconds : Infinity,
+                    position);
+                job.durationSeconds = Number.isFinite(session.probe.durationSeconds) ? session.probe.durationSeconds : job.durationSeconds;
+                break;
+            }
+
+            position += duration;
+            duration = SEGMENT_SECONDS;
+            job.convertedSeconds = Number.isFinite(session.probe.durationSeconds)
+                ? Math.min(position, session.probe.durationSeconds)
+                : position;
+        }
+
+        job.currentChunkBytes = 0;
+        if (!await isManualJobFullyCached(session)) {
+            throw new Error("The converted cache limit is too small to retain the full file.");
+        }
+        job.state = "completed";
+    } catch (error) {
+        if (job.cancelled || error?.name === "AbortError") {
+            job.state = "cancelled";
+        } else {
+            job.state = "error";
+            job.errorMessage = error?.message ?? String(error);
+        }
+    } finally {
+        job.abortController = null;
+        await releaseQueuedUriResolver(job.id);
+        await Promise.allSettled([
+            releaseInput(session.input),
+            cleanupBackgroundFfmpegFiles("segment.mp4")
+        ]);
+    }
+}
+
+async function getBackgroundConversionExports() {
+    if (browserAssemblyExports) return browserAssemblyExports;
+    const module = await import(new URL("./_framework/dotnet.js", document.baseURI).href);
+    const runtime = module.dotnet.instance;
+    const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
+    browserAssemblyExports = exports.Medius.Browser.BrowserBackgroundConversionHost;
+    return browserAssemblyExports;
+}
+
+async function refreshQueuedConversionUri(jobId, fallbackUri) {
+    let exports;
+    try {
+        exports = await getBackgroundConversionExports();
+    } catch (error) {
+        console.warn("Could not refresh the queued media URL; using the original URL.", error);
+        return fallbackUri;
+    }
+    return await exports.RefreshConversionUri(jobId, fallbackUri);
+}
+
+async function releaseQueuedUriResolver(jobId) {
+    try {
+        const exports = await getBackgroundConversionExports();
+        exports.ReleaseConversionUri(jobId);
+    } catch {
+        // The direct player harness has no .NET host or resolver to release.
+    }
+}
+
+async function isManualJobFullyCached(session) {
+    if (!Number.isFinite(session.probe.durationSeconds)) {
+        return false;
+    }
+
+    const cache = await caches.open(convertedCacheName);
+    let position = 0;
+    let duration = FIRST_SEGMENT_SECONDS;
+    while (position < session.probe.durationSeconds - 0.2) {
+        const key = getConvertedSegmentKey(session, position, duration);
+        if (!await cache.match(convertedSegmentRequest(key))) {
+            return false;
+        }
+        position += duration;
+        duration = SEGMENT_SECONDS;
+    }
+
+    return true;
+}
+
 async function runSegmentLoop(session, onStarted) {
-    let position = session.startSeconds;
+    let appendPosition = session.startSeconds;
+    let cachePosition = 0;
+    let cacheDuration = FIRST_SEGMENT_SECONDS;
     let playing = false;
+    let playbackStreamFinished = false;
     // A short piece is converted first, and again after each seek, so playback resumes quickly.
     let useShortSegment = true;
 
@@ -760,72 +1246,120 @@ async function runSegmentLoop(session, onStarted) {
         while (session.isCurrent()) {
             if (session.seekTarget !== null) {
                 // Convert from the exact seek point so playback can resume immediately.
-                position = Math.max(0, session.seekTarget);
+                appendPosition = Math.max(0, session.seekTarget);
                 session.seekTarget = null;
                 session.needsInitSegment = true;
                 useShortSegment = true;
+                playbackStreamFinished = false;
             }
 
             // Never reconvert media that is already in the buffer.
-            const bufferedEnd = bufferedEndCovering(session.sourceBuffer, position);
+            const bufferedEnd = bufferedEndCovering(session.sourceBuffer, appendPosition);
             if (bufferedEnd !== null) {
-                position = bufferedEnd;
+                appendPosition = bufferedEnd;
+            }
+            if (!session.backgroundCacheCompleted && isSourceFullyConverted(session, cachePosition)) {
+                await completePlaybackBackgroundJob(session, cachePosition);
             }
 
-            if (isFullyConverted(session, position)) {
-                await finishStream(session);
-                setPlayerStatus("Buffered", `${session.fileName} — conversion complete`);
-                reportStatus(session, position, playing);
-                if (!await waitForSeek(session)) return;
-                continue;
-            }
-
-            if (playing && !await waitForBufferRoom(session, position)) return;
-            if (session.seekTarget !== null) continue;
-
-            const duration = useShortSegment ? FIRST_SEGMENT_SECONDS : SEGMENT_SECONDS;
-            const segment = await convertSegment(session, position, duration);
-            if (!session.isCurrent()) return;
-
-            if (!segment) {
-                if (!playing) throw conversionError();
-                // Nothing decodable here, so treat this point as the end of the media.
-                session.probe.durationSeconds = Math.min(
-                    Number.isFinite(session.probe.durationSeconds) ? session.probe.durationSeconds : Infinity,
-                    position);
-                continue;
-            }
-
-            await appendSegment(session, segment, position);
-            position += duration;
-            useShortSegment = false;
-
-            if (!playing) {
-                playing = true;
-                await beginPlayback(session);
-                onStarted();
-            }
-
-            reportStatus(session, position, playing);
-            if (playing
-                && !session.subtitleWebVtt
-                && session.probe.hasSubtitles
-                && !session.embeddedSubtitleStarted
-                && position >= FIRST_SEGMENT_SECONDS + (SEGMENT_SECONDS * 2)) {
-                session.embeddedSubtitleStarted = true;
-                const revision = subtitleRevision;
-                await ensureSessionInput(session);
-                const embedded = await extractEmbeddedSubtitle(session.input.path);
-                if (session.isCurrent() && revision === subtitleRevision && embedded) {
-                    setSubtitleInternal(
-                        shiftWebVtt(embedded, session.embeddedSubtitleOffsetMilliseconds));
+            if (isFullyConverted(session, appendPosition)) {
+                if (!playbackStreamFinished) {
+                    await finishStream(session);
+                    playbackStreamFinished = true;
+                }
+                setPlayerStatus("Buffered", `${session.fileName} — playback range buffered`);
+                reportStatus(session, appendPosition, playing);
+                if (!session.backgroundCacheEnabled || session.backgroundCacheCompleted) {
+                    if (!await waitForSeek(session)) return;
+                    continue;
                 }
             }
+
+            const playbackNeedsMore = !playbackStreamFinished && (!playing
+                || !session.player
+                || appendPosition - session.player.currentTime <= MAX_BUFFER_AHEAD_SECONDS);
+            if (playbackNeedsMore) {
+                const duration = useShortSegment ? FIRST_SEGMENT_SECONDS : SEGMENT_SECONDS;
+                const segmentStart = appendPosition;
+                const segment = await convertSegment(session, appendPosition, duration);
+                if (!session.isCurrent()) return;
+
+                if (!segment) {
+                    if (!playing) throw conversionError();
+                    // Nothing decodable here, so treat this point as the end of the media.
+                    session.probe.durationSeconds = Math.min(
+                        Number.isFinite(session.probe.durationSeconds) ? session.probe.durationSeconds : Infinity,
+                        appendPosition);
+                    continue;
+                }
+
+                await appendSegment(session, segment, appendPosition);
+                appendPosition += duration;
+                if (Math.abs(segmentStart - cachePosition) < 0.001 && duration === cacheDuration) {
+                    cachePosition += cacheDuration;
+                    cacheDuration = SEGMENT_SECONDS;
+                }
+                useShortSegment = false;
+                syncPlaybackBackgroundJob(session, "converting", cachePosition);
+
+                if (!playing) {
+                    playing = true;
+                    await beginPlayback(session);
+                    onStarted();
+                }
+
+                reportStatus(session, appendPosition, playing);
+                if (playing
+                    && !session.subtitleWebVtt
+                    && session.probe.hasSubtitles
+                    && !session.embeddedSubtitleStarted
+                    && appendPosition >= FIRST_SEGMENT_SECONDS + (SEGMENT_SECONDS * 2)) {
+                    session.embeddedSubtitleStarted = true;
+                    const revision = subtitleRevision;
+                    await ensureSessionInput(session);
+                    const embedded = await extractEmbeddedSubtitle(session.input.path);
+                    if (session.isCurrent() && revision === subtitleRevision && embedded) {
+                        setSubtitleInternal(
+                            shiftWebVtt(embedded, session.embeddedSubtitleOffsetMilliseconds));
+                    }
+                }
+                continue;
+            }
+
+            if (session.backgroundCacheEnabled && !session.backgroundCacheCompleted) {
+                if (!isSourceFullyConverted(session, cachePosition)) {
+                    const segment = await convertSegment(session, cachePosition, cacheDuration);
+                    if (!session.isCurrent()) return;
+
+                    if (!segment) {
+                        session.probe.durationSeconds = Math.min(
+                            Number.isFinite(session.probe.durationSeconds) ? session.probe.durationSeconds : Infinity,
+                            cachePosition);
+                        await completePlaybackBackgroundJob(session, cachePosition);
+                        continue;
+                    }
+
+                    cachePosition += cacheDuration;
+                    cacheDuration = SEGMENT_SECONDS;
+                    syncPlaybackBackgroundJob(session, "converting", cachePosition);
+                    if (isSourceFullyConverted(session, cachePosition)) {
+                        await completePlaybackBackgroundJob(session, cachePosition);
+                    }
+                } else {
+                    await completePlaybackBackgroundJob(session, cachePosition);
+                    await delay(250);
+                }
+                continue;
+            }
+
+            if (playing && !await waitForBufferRoom(session, appendPosition)) return;
+            if (session.seekTarget !== null) continue;
         }
     } finally {
         if (session.isCurrent()) {
             segmentedActive = false;
         }
+        await finalizePlaybackBackgroundJob(session, cachePosition);
         detachSeekListener(session);
         await releaseInput(session.input);
     }
@@ -938,7 +1472,9 @@ async function readConvertedSegment(key) {
     const response = await cache.match(convertedSegmentRequest(key));
     if (!response) return null;
 
-    touchConvertedCacheEntry(key, Number(response.headers.get("X-Medius-Size") ?? 0));
+    await withConvertedCacheLock(() => {
+        touchConvertedCacheEntry(key, Number(response.headers.get("X-Medius-Size") ?? 0));
+    });
     const probeHeader = response.headers.get("X-Medius-Probe");
     return {
         data: new Uint8Array(await response.arrayBuffer()),
@@ -950,19 +1486,21 @@ async function readConvertedSegment(key) {
 
 async function writeConvertedSegment(key, data, probe, limitBytes) {
     if (limitBytes <= 0) return;
-    const cache = await caches.open(convertedCacheName);
-    const probeHeader = bytesToBase64(new TextEncoder().encode(JSON.stringify(probe)));
-    await cache.put(
-        convertedSegmentRequest(key),
-        new Response(data, {
-            headers: {
-                "Content-Type": "video/mp4",
-                "X-Medius-Size": String(data.byteLength),
-                "X-Medius-Probe": probeHeader
-            }
-        }));
-    touchConvertedCacheEntry(key, data.byteLength);
-    await pruneConvertedCache(limitBytes);
+    await withConvertedCacheLock(async () => {
+        const cache = await caches.open(convertedCacheName);
+        const probeHeader = bytesToBase64(new TextEncoder().encode(JSON.stringify(probe)));
+        await cache.put(
+            convertedSegmentRequest(key),
+            new Response(data, {
+                headers: {
+                    "Content-Type": "video/mp4",
+                    "X-Medius-Size": String(data.byteLength),
+                    "X-Medius-Probe": probeHeader
+                }
+            }));
+        touchConvertedCacheEntry(key, data.byteLength);
+        await pruneConvertedCacheCore(limitBytes, cache);
+    });
 }
 
 function convertedSegmentRequest(key) {
@@ -986,9 +1524,15 @@ function touchConvertedCacheEntry(key, size) {
 }
 
 async function pruneConvertedCache(limitBytes) {
+    await withConvertedCacheLock(async () => {
+        const cache = await caches.open(convertedCacheName);
+        await pruneConvertedCacheCore(limitBytes, cache);
+    });
+}
+
+async function pruneConvertedCacheCore(limitBytes, cache) {
     const entries = readConvertedCacheIndex().sort((a, b) => a.lastAccess - b.lastAccess);
     let total = entries.reduce((sum, item) => sum + item.size, 0);
-    const cache = await caches.open(convertedCacheName);
     while (total > limitBytes && entries.length > 0) {
         const removed = entries.shift();
         total -= removed.size;
@@ -997,10 +1541,17 @@ async function pruneConvertedCache(limitBytes) {
     localStorage.setItem(convertedCacheIndexKey, JSON.stringify(entries));
 }
 
+function withConvertedCacheLock(action) {
+    const result = convertedCacheMutation.then(action, action);
+    convertedCacheMutation = result.catch(() => {});
+    return result;
+}
+
 async function appendSegment(session, data, start) {
     if (!session.sourceBuffer) {
         await attachMediaSource(session, data);
     }
+    await reopenEndedMediaSource(session);
 
     const payload = session.needsInitSegment ? data : data.slice(findMediaFragmentOffset(data));
     session.needsInitSegment = false;
@@ -1015,6 +1566,17 @@ async function appendSegment(session, data, start) {
         await waitForIdleBuffer(session.sourceBuffer);
         session.sourceBuffer.timestampOffset = start;
         await appendBuffer(session.sourceBuffer, payload);
+    }
+
+    async function reopenEndedMediaSource(session) {
+        if (session.mediaSource?.readyState !== "ended") return;
+        try {
+            // appendBuffer's first step reopens an ended MediaSource. An empty append lets
+            // us set timestampOffset safely before appending the real sought segment.
+            await appendBuffer(session.sourceBuffer, new Uint8Array());
+        } catch (error) {
+            throw new Error(`The browser could not reopen the media stream after seeking: ${error?.message ?? error}`);
+        }
     }
 }
 
@@ -1083,6 +1645,11 @@ function isFullyConverted(session, position) {
     const end = session.endSeconds
         ?? (Number.isFinite(session.probe.durationSeconds) ? session.probe.durationSeconds : null);
     return end !== null && position >= end - 0.2;
+}
+
+function isSourceFullyConverted(session, position) {
+    return Number.isFinite(session.probe.durationSeconds)
+        && position >= session.probe.durationSeconds - 0.2;
 }
 
 function configurePlaybackRange(player, startSeconds, endSeconds) {
@@ -1260,30 +1827,212 @@ function buildSegmentArgs(session, outputName, start, duration) {
     return args;
 }
 
+async function ensureBackgroundFfmpegLoaded() {
+    bgFfmpeg ??= new FFmpeg();
+    const instance = bgFfmpeg;
+    if (instance.loaded) {
+        return instance;
+    }
+
+    instance.on("log", ({ message }) => {
+        if (handleRemoteProgressLog(message)) return;
+        bgFfmpegLog.push(message);
+        if (bgFfmpegLog.length > 40) bgFfmpegLog.shift();
+        bgFfmpegLogSink?.push(message);
+    });
+
+    const assetUrl = path => {
+        const url = new URL(path, import.meta.url);
+        url.searchParams.set("v", ffmpegAssetVersion);
+        return url.href;
+    };
+
+    let timeoutId;
+    try {
+        await Promise.race([
+            instance.load({
+                classWorkerURL: assetUrl("./ffmpeg/worker.js"),
+                coreURL: assetUrl("./ffmpeg/ffmpeg-core.js"),
+                wasmURL: assetUrl("./ffmpeg/ffmpeg-core.wasm")
+            }),
+            new Promise((_, reject) => {
+                timeoutId = setTimeout(
+                    () => reject(new Error("Background ffmpeg.wasm did not load within 30 seconds. Refresh the page to clear stale cached assets.")),
+                    30000);
+            })
+        ]);
+    } catch (error) {
+        instance.terminate();
+        if (bgFfmpeg === instance) bgFfmpeg = undefined;
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+
+    return instance;
+}
+
+function handleRemoteProgressLog(message) {
+    if (!message?.startsWith(RANGE_LOG_PREFIX)) return false;
+    try {
+        const progress = JSON.parse(message.slice(RANGE_LOG_PREFIX.length));
+        for (const sink of remoteProgressSinks.get(progress.url) ?? []) sink(progress);
+    } catch (error) {
+        console.warn("Could not parse ffmpeg range progress.", error);
+    }
+    return true;
+}
+
+function registerRemoteProgress(url, sink) {
+    const sinks = remoteProgressSinks.get(url) ?? new Set();
+    sinks.add(sink);
+    remoteProgressSinks.set(url, sinks);
+}
+
+function unregisterRemoteProgress(url, sink) {
+    const sinks = remoteProgressSinks.get(url);
+    if (!sinks) return;
+    sinks.delete(sink);
+    if (sinks.size === 0) remoteProgressSinks.delete(url);
+}
+
+async function probeBackgroundSessionInput(session) {
+    const lines = [];
+    bgFfmpegLogSink = lines;
+    try {
+        await bgFfmpeg.exec([
+            "-hide_banner",
+            "-i", session.input.path,
+            "-map", "0:v:0",
+            "-frames:v", "0",
+            "-f", "null",
+            "-"
+        ], 30000);
+    } finally {
+        bgFfmpegLogSink = undefined;
+    }
+    session.probe = parseProbe(lines.join("\n"));
+}
+
+async function convertBackgroundSegment(session, start, duration, job) {
+    const cacheKey = getConvertedSegmentKey(session, start, duration);
+    let cached;
+    try {
+        cached = await readConvertedSegment(cacheKey);
+    } catch (error) {
+        console.warn("Could not read a converted-media cache entry; reconverting it.", error);
+    }
+    if (cached) {
+        if (Number.isNaN(session.probe.durationSeconds) && cached.probe) {
+            session.probe = cached.probe;
+        }
+        job.currentSegmentBytes = cached.data.byteLength;
+        return cached.data;
+    }
+
+    const outputName = "segment.mp4";
+    await Promise.allSettled([bgFfmpeg.deleteFile(outputName)]);
+    const capture = Number.isNaN(session.probe.durationSeconds);
+    const lines = [];
+    bgFfmpegLogSink = capture ? lines : undefined;
+    let exitCode;
+    try {
+        exitCode = await bgFfmpeg.exec(buildSegmentArgs(session, outputName, start, duration), 180000);
+    } finally {
+        bgFfmpegLogSink = undefined;
+    }
+    if (job.cancelled || exitCode !== 0) return null;
+
+    if (capture) {
+        session.probe = parseProbe(lines.join("\n"));
+    }
+
+    const data = await bgFfmpeg.readFile(outputName);
+    job.currentSegmentBytes = data.byteLength;
+    await Promise.allSettled([bgFfmpeg.deleteFile(outputName)]);
+    if (findMediaFragmentOffset(data) < 0) return null;
+
+    try {
+        await writeConvertedSegment(
+            cacheKey,
+            data,
+            session.probe,
+            session.convertedCacheLimitBytes);
+    } catch (error) {
+        console.warn("Could not cache the converted media segment; conversion will continue.", error);
+    }
+    return data;
+}
+
+async function cleanupBackgroundFfmpegFiles(...names) {
+    if (!bgFfmpeg) return;
+    await Promise.allSettled([
+        ...names.map(name => bgFfmpeg.deleteFile(name)),
+        bgFfmpeg.deleteFile("embedded.vtt")
+    ]);
+}
+
 // WORKERFS exposes the source as a virtual file so ffmpeg reads the parts it needs
 // instead of copying the whole download into the wasm heap.
 async function ensureSessionInput(session) {
     if (session.input) return;
-    const download = downloadSource(session.uri, (downloaded, total, currentChunk) => {
+    const updateProgress = (progress, totalArg = 0, currentChunkArg = 0) => {
+        const downloaded = typeof progress === "number"
+            ? progress
+            : progress.downloadedBytes ?? progress.downloaded ?? 0;
+        const total = typeof progress === "number"
+            ? totalArg
+            : progress.totalBytes ?? progress.total ?? 0;
+        const currentChunk = typeof progress === "number"
+            ? currentChunkArg
+            : progress.currentChunkBytes ?? progress.currentChunk ?? 0;
         session.downloadedBytes = downloaded;
         session.totalBytes = total;
         session.currentDownloadChunkBytes = currentChunk;
+        syncPlaybackBackgroundJob(session, "downloading");
         if (!session.isCurrent()) return;
         const detail = describeDownload(session.fileName, downloaded, total, currentChunk);
         setPlayerStatus("Downloading", detail);
         if (!session.player) showLoading(detail);
-    });
-    const [, blob] = await Promise.all([ensureFfmpegLoaded(), download]);
-    if (!session.isCurrent()) return;
-    const instance = ffmpeg;
-    session.downloadedBytes = blob.size;
-    session.totalBytes ||= blob.size;
-    session.input = await mountInput(blob, session.extension, session.generation, instance);
-}
-
-async function downloadSource(uri, onProgress) {
+    };
     const controller = new AbortController();
     activeDownloadController = controller;
+    const [, remote] = await Promise.all([
+        ensureFfmpegLoaded(),
+        probeRangeSource(session.uri, controller, session.sourceSizeBytes)
+    ]);
+    if (!session.isCurrent()) return;
+    const instance = ffmpeg;
+    if (remote) {
+        updateProgress({
+            downloadedBytes: remote.initialBytes,
+            totalBytes: remote.totalBytes,
+            currentChunkBytes: remote.initialBytes
+        });
+        session.input = await mountRemoteInput(
+            session.uri,
+            session.extension,
+            session.generation,
+            instance,
+            remote.totalBytes,
+            updateProgress);
+    } else {
+        const blob = await downloadSource(session.uri, updateProgress, { controller, trackAsPlayback: true });
+        if (!session.isCurrent()) return;
+        session.downloadedBytes = blob.size;
+        session.totalBytes ||= blob.size;
+        session.input = await mountInput(blob, session.extension, session.generation, instance);
+    }
+    syncPlaybackBackgroundJob(session, "converting");
+    if (activeDownloadController === controller) activeDownloadController = undefined;
+}
+
+async function downloadSource(uri, onProgress, options = {}) {
+    const controller = options.controller ?? new AbortController();
+    const trackAsPlayback = options.trackAsPlayback === true;
+    if (trackAsPlayback) {
+        activeDownloadController = controller;
+    }
     try {
         const response = await fetch(uri, { signal: controller.signal });
         if (!response.ok) {
@@ -1315,7 +2064,52 @@ async function downloadSource(uri, onProgress) {
         onProgress(downloaded, total || downloaded, chunks.at(-1)?.byteLength ?? 0);
         return new Blob(chunks, { type: response.headers.get("Content-Type") ?? "application/octet-stream" });
     } finally {
-        if (activeDownloadController === controller) activeDownloadController = undefined;
+        if (trackAsPlayback && activeDownloadController === controller) activeDownloadController = undefined;
+    }
+}
+
+async function probeRangeSource(uri, controller, expectedSize = 0) {
+    try {
+        const response = await fetch(uri, {
+            headers: { Range: "bytes=0-0" },
+            signal: controller.signal
+        });
+        if (response.status !== 206) {
+            response.body?.cancel();
+            return null;
+        }
+        const contentRange = response.headers.get("Content-Range");
+        const totalBytes = Number(/\/(\d+)$/.exec(contentRange ?? "")?.[1] ?? expectedSize ?? 0);
+        const bytes = await response.arrayBuffer();
+        return totalBytes > 0
+            ? { totalBytes, initialBytes: bytes.byteLength }
+            : null;
+    } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        return null;
+    }
+}
+
+async function mountRemoteInput(uri, extension, generation, instance, size, onProgress) {
+    const name = `input${extension}`;
+    const mountPoint = `/medius-${generation}`;
+    await instance.createDir(mountPoint);
+    registerRemoteProgress(uri, onProgress);
+    try {
+        const mounted = await instance.mount("REMOTEFS", { name, url: uri, size }, mountPoint);
+        if (!mounted) throw new Error("The ffmpeg worker could not mount the remote media.");
+        return {
+            path: `${mountPoint}/${name}`,
+            mountPoint,
+            name,
+            instance,
+            remoteUrl: uri,
+            remoteProgressSink: onProgress
+        };
+    } catch (error) {
+        unregisterRemoteProgress(uri, onProgress);
+        await Promise.allSettled([instance.deleteDir(mountPoint)]);
+        throw error;
     }
 }
 
@@ -1335,6 +2129,9 @@ async function mountInput(blob, extension, generation, instance) {
 
 async function releaseInput(input) {
     if (!input?.instance) return;
+    if (input.remoteUrl && input.remoteProgressSink) {
+        unregisterRemoteProgress(input.remoteUrl, input.remoteProgressSink);
+    }
 
     if (input.mountPoint) {
         await Promise.allSettled([
@@ -1486,8 +2283,8 @@ function delay(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
-function conversionError() {
-    return new Error(`ffmpeg.wasm could not convert this media file.\n${ffmpegLog.slice(-5).join("\n")}`);
+function conversionError(logs = ffmpegLog) {
+    return new Error(`ffmpeg.wasm could not convert this media file.\n${logs.slice(-5).join("\n")}`);
 }
 
 function addSubtitleTrack(player, webVtt) {

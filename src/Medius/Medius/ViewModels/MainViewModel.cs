@@ -93,6 +93,9 @@ public partial class MainViewModel : ViewModelBase
     public partial bool IsAppDataPanelVisible { get; set; }
 
     [ObservableProperty]
+    public partial bool IsConversionQueueVisible { get; set; }
+
+    [ObservableProperty]
     public partial bool IsOfflineView { get; set; }
 
     [ObservableProperty]
@@ -127,9 +130,6 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial double ConvertedCacheSizeMb { get; set; } = 512;
-
-    [ObservableProperty]
-    public partial bool ConvertWholeFile { get; set; }
 
     [ObservableProperty]
     public partial string ConvertedCacheLabel { get; set; } = "Converted cache";
@@ -168,6 +168,7 @@ public partial class MainViewModel : ViewModelBase
     private void ShowAddMount()
     {
         IsAppDataPanelVisible = false;
+        IsConversionQueueVisible = false;
         MountName = string.Empty;
         ProviderKind = "Azure Blob";
         Endpoint = string.Empty;
@@ -193,7 +194,16 @@ public partial class MainViewModel : ViewModelBase
     private void ToggleAppDataPanel()
     {
         IsMountEditorVisible = false;
+        IsConversionQueueVisible = false;
         IsAppDataPanelVisible = !IsAppDataPanelVisible;
+    }
+
+    [RelayCommand]
+    private void ToggleConversionQueue()
+    {
+        IsMountEditorVisible = false;
+        IsAppDataPanelVisible = false;
+        IsConversionQueueVisible = !IsConversionQueueVisible;
     }
 
     [RelayCommand]
@@ -682,6 +692,52 @@ public partial class MainViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private async Task QueueSelectedForConversionAsync()
+    {
+        if (SelectedItem is null || !MediaTypes.IsVideo(SelectedItem))
+        {
+            Status = "Select a video first.";
+            return;
+        }
+
+        await RunUiOperationAsync(async () =>
+        {
+            var selected = SelectedItem ?? throw new InvalidOperationException("Select a video first.");
+            var target = await ResolveSelectedVideoForPlaybackAsync(selected);
+            Func<CancellationToken, Task<Uri>>? uriResolver = target.OfflineUri is null
+                ? cancellationToken => ResolveFreshContentUriAsync(
+                    target.Mount,
+                    target.Video,
+                    cancellationToken)
+                : null;
+            var jobId = await PlatformServices.BackgroundConversion.EnqueueConversionAsync(
+                target.Content.Uri.ToString(),
+                target.Video.Name,
+                BuildMediaKey(target.Mount.Id, target.Video),
+                SelectedConversionResolution?.Width ?? 854,
+                (long)(Math.Max(0, ConvertedCacheSizeMb) * 1024 * 1024),
+                target.Content.Size ?? target.Video.Size ?? 0,
+                uriResolver);
+            IsConversionQueueVisible = true;
+            Status = $"Queued {target.Video.Name} for background conversion ({jobId}).";
+        });
+    }
+
+    private async Task<Uri> ResolveFreshContentUriAsync(
+        MountDefinition mount,
+        MediaItem video,
+        CancellationToken cancellationToken)
+    {
+        var provider = CreateProvider(mount);
+        var siblings = await provider.ListAsync(GetParentPath(video.Path), cancellationToken);
+        var refreshed = siblings.FirstOrDefault(item =>
+            !item.IsDirectory
+            && string.Equals(item.Path, video.Path, StringComparison.OrdinalIgnoreCase))
+            ?? video;
+        return (await provider.GetContentAsync(refreshed, cancellationToken)).Uri;
+    }
+
+    [RelayCommand]
     private async Task RemoveSelectedOfflineAsync()
     {
         if (SelectedItem is null) return;
@@ -903,24 +959,16 @@ public partial class MainViewModel : ViewModelBase
 
         var requestId = Interlocked.Increment(ref _playbackRequestId);
         var selected = SelectedItem;
-        var mountId = GetItemMountId(selected);
-        var mount = Mounts.FirstOrDefault(item => item.Id == mountId);
-        if (mount is null)
-        {
-            Status = "The selected video mount is unavailable.";
-            return;
-        }
         IsBusy = true;
         Status = $"Loading {selected.Name}…";
         try
         {
-            var provider = _activeMount?.Id == mount.Id && _provider is not null
-                ? _provider
-                : CreateProvider(mount);
-            var offlineUri = await PlatformServices.Offline.ResolveAsync(GetOfflineKey(mount.Id, selected.Path));
-            var video = selected.Metadata?.ContainsKey(EntryKindKey) == true && offlineUri is null
-                ? await ResolveProviderItemAsync(provider, selected.Path)
-                : selected;
+            var target = await ResolveSelectedVideoForPlaybackAsync(selected);
+            var mount = target.Mount;
+            var provider = target.Provider;
+            var video = target.Video;
+            var content = target.Content;
+            var offlineUri = target.OfflineUri;
             if (_playingVideo is not null && !_playingVideo.Path.Equals(video.Path, StringComparison.Ordinal))
             {
                 Interlocked.Increment(ref _subtitleRequestId);
@@ -930,9 +978,6 @@ public partial class MainViewModel : ViewModelBase
             }
             _playingVideo = null;
             await PlatformServices.Playback.StopAndShowLoadingAsync(video.Name);
-            var content = offlineUri is null
-                ? await provider.GetContentAsync(video)
-                : new MediaContent(offlineUri, video.ContentType, video.Size);
             if (requestId != _playbackRequestId) return;
 
             var siblings = offlineUri is not null && selected.Metadata?.ContainsKey(EntryKindKey) == true
@@ -952,10 +997,9 @@ public partial class MainViewModel : ViewModelBase
                 SubtitleOffsetMilliseconds,
                 startSeconds,
                 endSeconds,
-                $"{mount.Id}|{video.Path}|{video.Size}|{video.LastModified:O}",
+                BuildMediaKey(mount.Id, video),
                 SelectedConversionResolution?.Width ?? 854,
-                (long)(Math.Max(0, ConvertedCacheSizeMb) * 1024 * 1024),
-                ConvertWholeFile);
+                (long)(Math.Max(0, ConvertedCacheSizeMb) * 1024 * 1024));
             if (requestId != _playbackRequestId) return;
 
             _playingVideo = video;
@@ -1218,6 +1262,25 @@ public partial class MainViewModel : ViewModelBase
             ?? throw new FileNotFoundException($"'{path}' no longer exists in its provider.");
     }
 
+    private async Task<(MountDefinition Mount, IMediaProvider Provider, MediaItem Video, MediaContent Content, Uri? OfflineUri)>
+        ResolveSelectedVideoForPlaybackAsync(MediaItem selected)
+    {
+        var mountId = GetItemMountId(selected);
+        var mount = Mounts.FirstOrDefault(item => item.Id == mountId)
+            ?? throw new InvalidOperationException("The selected video mount is unavailable.");
+        var provider = _activeMount?.Id == mount.Id && _provider is not null
+            ? _provider
+            : CreateProvider(mount);
+        var offlineUri = await PlatformServices.Offline.ResolveAsync(GetOfflineKey(mount.Id, selected.Path));
+        var video = selected.Metadata?.ContainsKey(EntryKindKey) == true && offlineUri is null
+            ? await ResolveProviderItemAsync(provider, selected.Path)
+            : selected;
+        var content = offlineUri is null
+            ? await provider.GetContentAsync(video)
+            : new MediaContent(offlineUri, video.ContentType, video.Size);
+        return (mount, provider, video, content, offlineUri);
+    }
+
     private async Task RefreshOfflineStorageAsync()
     {
         var estimate = await PlatformServices.Offline.EstimateAsync();
@@ -1278,6 +1341,9 @@ public partial class MainViewModel : ViewModelBase
         Path.GetDirectoryName(path)?.Replace('\\', '/') ?? string.Empty;
 
     private static string GetOfflineKey(string mountId, string path) => $"{mountId}|{path}";
+
+    private static string BuildMediaKey(string mountId, MediaItem video) =>
+        $"{mountId}|{video.Path}|{video.Size}|{video.LastModified:O}";
 
     private static string RemoveQuery(string endpoint)
     {

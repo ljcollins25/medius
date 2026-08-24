@@ -479,6 +479,108 @@ button {
     accent-color: #1597d4;
 }
 
+.conversion-queue-panel {
+    max-height: calc(100dvh - 28px);
+}
+
+.queue-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+}
+
+.queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    max-height: min(62dvh, 520px);
+}
+
+.queue-item {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: #0d1828;
+    border: 1px solid #22344c;
+    border-radius: 12px;
+}
+
+.queue-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.queue-file {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.queue-details {
+    display: grid;
+    gap: 4px;
+}
+
+.queue-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.queue-error {
+    color: #fca5a5;
+    word-break: break-word;
+}
+
+.state-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 92px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+
+.queue-state-queued {
+    background: #253448;
+    color: #cbd5e1;
+}
+
+.queue-state-downloading {
+    background: #0f3a53;
+    color: #7dd3fc;
+}
+
+.queue-state-converting {
+    background: #3b2811;
+    color: #fdba74;
+}
+
+.queue-state-completed {
+    background: #123727;
+    color: #86efac;
+}
+
+.queue-state-error {
+    background: #4c1d1d;
+    color: #fca5a5;
+}
+
+.queue-state-cancelled {
+    background: #3a3a3a;
+    color: #d4d4d4;
+}
+
 input[type="text"],
 input[type="password"],
 input[type="number"],
@@ -507,4 +609,19 @@ select:focus {
     color: #93a4ba;
     background: #08111f;
     pointer-events: none;
+}
+
+
+@media (max-width: 430px) {
+    .queue-item-header,
+    .queue-toolbar,
+    .queue-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .state-badge {
+        min-width: 0;
+        width: fit-content;
+    }
 }

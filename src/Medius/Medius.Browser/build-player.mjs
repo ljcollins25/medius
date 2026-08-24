@@ -12,7 +12,7 @@ await build({
 
 await mkdir("wwwroot/ffmpeg", { recursive: true });
 await build({
-    entryPoints: ["node_modules/@ffmpeg/ffmpeg/dist/esm/worker.js"],
+    entryPoints: ["ffmpeg-worker.js"],
     outfile: "wwwroot/ffmpeg/worker.js",
     bundle: true,
     format: "esm",

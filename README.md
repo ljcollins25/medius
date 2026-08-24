@@ -36,9 +36,9 @@ Set-Location ..\..\..
 dotnet run --project src\Medius\Medius.Browser\Medius.Browser.csproj
 ```
 
-The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Unsupported formats are converted piece by piece into fragmented MP4: playback starts after a 5-second piece, and 10-second pieces are then converted ahead of the playhead so playback continues without gaps. Pieces are placed on the real media timeline, so the scrubber shows the true duration and seeking works — a seek converts from the exact target position, and jumping back into already-converted media resumes immediately. Media that has been watched is released so long files stay within the browser's buffer limits, the source is mounted through WORKERFS so ffmpeg reads it in place instead of copying it into the wasm heap, and streams that are already browser-compatible are copied rather than re-encoded.
+The generated ffmpeg bundle and single-threaded core are served locally from `wwwroot`; media is not sent to a transcoding service. Unsupported formats are converted piece by piece into fragmented MP4: playback starts after a 5-second piece, and 10-second pieces are then converted ahead of the playhead so playback continues without gaps. Pieces are placed on the real media timeline, so the scrubber shows the true duration and seeking works — a seek converts from the exact target position, and jumping back into already-converted media resumes immediately. Media that has been watched is released so long files stay within the browser's buffer limits. When the provider supports HTTP Range, ffmpeg reads a lazy range-backed virtual file and playback can start before the complete source downloads; Medius falls back to a full WORKERFS blob only for sources without Range support.
 
-The player status separates **Downloading**, **Converting**, **Buffered**, and **Playing**. During download it reports total bytes and the current browser network-read chunk; during segmented conversion it reports the 5- or 10-second segment and its generated size. Source download and ffmpeg initialization run concurrently. Enable **Convert full file before playback** under **Playlists & offline** to wait for one complete converted MP4 instead of starting from segmented output.
+The player status separates **Downloading**, **Converting**, **Buffered**, and **Playing**. During range-backed reads it reports unique source bytes fetched, total source size, and the current ffmpeg range chunk; during segmented conversion it reports the 5- or 10-second segment and its generated size. Source access and ffmpeg initialization run concurrently, Transcode playback starts from a 5-second segment, and later canonical segments continue to fill the converted cache in the background.
 
 Starting another video immediately pauses and clears the current player, cancels its ffmpeg worker, and displays a loading overlay while the replacement video hydrates or converts.
 
@@ -66,6 +66,12 @@ Open **Playlists & offline** to:
 - Remove individual playlist/history entries or delete custom playlists.
 
 The browser requests persistent Cache Storage, and a service worker caches the app shell plus media. Cached media is exposed through same-origin URLs with HTTP Range support, so direct video seeking and ffmpeg conversion both work with the network disconnected. Converted fragments are cached separately with an LRU size limit and can be cleared from **Playlists & offline**. AVI/MKV can retain their original resolution or convert to 1080p, 720p, or 480p. The published app must be served over HTTPS (or `localhost`) for service workers and persistent storage.
+
+## Background conversion queue
+
+Use a video's context menu action **Add to background conversion queue** to pre-convert it into the segmented browser cache without starting playback. Open **Menu → Background conversions** to watch queued, downloading, converting, completed, cancelled, or failed jobs, cancel pending work, and clear finished entries.
+
+Manual queue jobs run one at a time in a dedicated background ffmpeg.wasm worker so playback remains independent. During Transcode playback, the current video also appears in this panel while Medius fills cache entries ahead of the playhead; cancelling that entry stops future background-only cache fill but does not stop playback.
 
 ## Encrypted app-data sync
 

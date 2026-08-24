@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using Medius.Core;
 using Medius.Services;
 
@@ -24,7 +25,6 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         string? mediaKey = null,
         int maxWidth = 854,
         long convertedCacheLimitBytes = 536870912,
-        bool convertWholeFile = false,
         CancellationToken cancellationToken = default) =>
         _ = await PlayVideoAsync(
             plan.Content.Uri.ToString(),
@@ -37,7 +37,7 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
             mediaKey,
             maxWidth,
             (double)convertedCacheLimitBytes,
-            convertWholeFile);
+            (double)(plan.Content.Size ?? plan.Video.Size ?? 0));
 
     public async Task<LocalSubtitle?> PickSubtitleAsync(CancellationToken cancellationToken = default)
     {
@@ -87,7 +87,7 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
         string? mediaKey,
         int maxWidth,
         double convertedCacheLimitBytes,
-        bool convertWholeFile);
+        double sourceSizeBytes);
 
     [JSImport("pickSubtitle", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.String>>]
@@ -110,6 +110,102 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
     [return: JSMarshalAs<JSType.Promise<JSType.Number>>]
     private static partial Task<double> GetConvertedCacheUsageCoreAsync();
 }
+
+[SupportedOSPlatform("browser")]
+public sealed partial class BrowserBackgroundConversionHost : IBackgroundConversionHost
+{
+    private static readonly ConcurrentDictionary<string, UriResolverRegistration> UriResolvers = new();
+
+    public async Task<string> EnqueueConversionAsync(
+        string uri,
+        string fileName,
+        string mediaKey,
+        int maxWidth,
+        long convertedCacheLimitBytes,
+        long sourceSizeBytes,
+        Func<CancellationToken, Task<Uri>>? uriResolver = null)
+    {
+        var jobId = await EnqueueConversionCoreAsync(
+            uri,
+            fileName,
+            mediaKey,
+            maxWidth,
+            (double)convertedCacheLimitBytes,
+            (double)sourceSizeBytes,
+            deferStart: uriResolver is not null);
+        if (uriResolver is not null)
+        {
+            UriResolvers[jobId] = new UriResolverRegistration(uriResolver, new CancellationTokenSource());
+            _ = await StartConversionQueueCoreAsync();
+        }
+        return jobId;
+    }
+
+    public Task<string> GetConversionQueueJsonAsync() => GetConversionQueueCoreAsync();
+
+    public async Task CancelConversionAsync(string jobId)
+    {
+        if (UriResolvers.TryGetValue(jobId, out var registration))
+        {
+            registration.Cancellation.Cancel();
+        }
+        _ = await CancelConversionCoreAsync(jobId);
+    }
+
+    public async Task ClearCompletedConversionsAsync() =>
+        _ = await ClearCompletedConversionsCoreAsync();
+
+    [JSExport]
+    public static async Task<string> RefreshConversionUri(string jobId, string fallbackUri)
+    {
+        if (!UriResolvers.TryGetValue(jobId, out var registration))
+        {
+            return fallbackUri;
+        }
+        return (await registration.Resolver(registration.Cancellation.Token)).ToString();
+    }
+
+    [JSExport]
+    public static void ReleaseConversionUri(string jobId)
+    {
+        if (UriResolvers.TryRemove(jobId, out var registration))
+        {
+            registration.Cancellation.Dispose();
+        }
+    }
+
+    [JSImport("enqueueConversion", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string> EnqueueConversionCoreAsync(
+        string uri,
+        string fileName,
+        string mediaKey,
+        int maxWidth,
+        double convertedCacheLimitBytes,
+        double sourceSizeBytes,
+        bool deferStart);
+
+    [JSImport("startConversionQueue", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
+    private static partial Task<bool> StartConversionQueueCoreAsync();
+
+    [JSImport("getConversionQueue", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.String>>]
+    private static partial Task<string> GetConversionQueueCoreAsync();
+
+    [JSImport("cancelConversion", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
+    private static partial Task<bool> CancelConversionCoreAsync(string jobId);
+
+    [JSImport("clearCompletedConversions", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
+    private static partial Task<bool> ClearCompletedConversionsCoreAsync();
+
+    private sealed record UriResolverRegistration(
+        Func<CancellationToken, Task<Uri>> Resolver,
+        CancellationTokenSource Cancellation);
+}
+
 
 [SupportedOSPlatform("browser")]
 internal sealed partial class BrowserAuthenticationHost : IWebAuthenticationHost

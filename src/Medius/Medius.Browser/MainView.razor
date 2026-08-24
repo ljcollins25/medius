@@ -3,6 +3,8 @@
 @using Medius.Services
 @using System.Collections.Specialized
 @using System.ComponentModel
+@using System.Text.Json
+@using System.Threading
 @implements IDisposable
 @inject MainViewModel VM
 
@@ -24,6 +26,7 @@
                     <button @onclick="() => VM.ShowOfflineCommand.Execute(null)">Offline files</button>
                     <button @onclick="() => VM.ShowPlaylistsCommand.Execute(null)">Playlists</button>
                     <button @onclick="() => VM.ShowHistoryCommand.Execute(null)">History</button>
+                    <button @onclick="() => VM.ToggleConversionQueueCommand.Execute(null)">Background conversions</button>
                     <hr />
                     <button @onclick="() => VM.ShowAddMountCommand.Execute(null)">Add storage mount…</button>
                     <button @onclick="() => VM.RemoveMountCommand.Execute(null)">Remove current mount</button>
@@ -116,6 +119,61 @@
                         <p class="muted small warning">QR quick setup includes the mount credential and passphrase. Anyone who scans it can access your synced state.</p>
                         <button class="btn" @onclick="() => VM.ShowSyncQrCommand.Execute(null)">Show setup QR</button>
                     }
+                    <p class="muted small">@VM.Status</p>
+                </div>
+            </div>
+        }
+
+
+        @if (VM.IsConversionQueueVisible)
+        {
+            <div class="panel-overlay">
+                <div class="panel-card conversion-queue-panel">
+                    <div class="panel-header">
+                        <div>
+                            <div class="panel-title">Background conversions</div>
+                            <div class="panel-subtitle">Queued and cached browser conversions</div>
+                        </div>
+                        <button class="btn" @onclick="CloseConversionQueue">Close</button>
+                    </div>
+                    <div class="queue-toolbar">
+                        <span class="muted small">@QueueSummary</span>
+                        <button class="btn" @onclick="ClearCompletedConversionsAsync">Clear completed</button>
+                    </div>
+                    <div class="queue-list">
+                        @if (_conversionQueueItems.Count == 0)
+                        {
+                            <p class="muted small">No background conversions are queued.</p>
+                        }
+                        else
+                        {
+                            @foreach (var job in _conversionQueueItems)
+                            {
+                                <div class="queue-item">
+                                    <div class="queue-item-header">
+                                        <div class="queue-file" title="@job.FileName">@job.FileName</div>
+                                        <span class="state-badge @QueueStateClass(job.State)">@job.State</span>
+                                    </div>
+                                    <div class="queue-details muted small">
+                                        <div>Downloaded: @FormatBytes(job.DownloadedBytes)@FormatTotalBytes(job.TotalBytes)</div>
+                                        <div>Current chunk: @FormatBytes(job.CurrentChunkBytes)</div>
+                                        <div>Converted: @FormatClock(job.ConvertedSeconds)@FormatTotalDuration(job.DurationSeconds)</div>
+                                        <div>Current segment: @FormatBytes(job.CurrentSegmentBytes)</div>
+                                        @if (!string.IsNullOrWhiteSpace(job.ErrorMessage))
+                                        {
+                                            <div class="queue-error">@job.ErrorMessage</div>
+                                        }
+                                    </div>
+                                    @if (CanCancel(job))
+                                    {
+                                        <div class="queue-actions">
+                                            <button class="btn" @onclick="() => CancelConversionAsync(job.Id)">Cancel</button>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
                     <p class="muted small">@VM.Status</p>
                 </div>
             </div>
@@ -231,13 +289,6 @@
                             <input type="number" step="128" min="0" max="16384" @bind="VM.ConvertedCacheSizeMb" />
                         </label>
                     </div>
-                    <label class="check-field">
-                        <input type="checkbox" @bind="VM.ConvertWholeFile" />
-                        <span>Convert full file before playback</span>
-                    </label>
-                    <span class="muted small">
-                        Uses more memory and starts later, but produces one fully buffered playable file.
-                    </span>
                     <div class="row-2col">
                         <span class="muted small">@VM.ConvertedCacheLabel</span>
                         <button class="btn" @onclick="() => VM.ClearConvertedCacheCommand.Execute(null)">Clear converted cache</button>
@@ -272,6 +323,7 @@
             {
                 <button @onclick="() => ContextAction(VM.AddSelectedToPlaylistCommand)">Add to selected playlist</button>
                 <button @onclick="() => ContextAction(VM.KeepSelectedOfflineCommand)">Keep offline</button>
+                <button @onclick="() => ContextAction(VM.QueueSelectedForConversionCommand)">Add to background conversion queue</button>
                 <button @onclick="() => ContextAction(VM.RemoveSelectedOfflineCommand)">Remove offline copy</button>
                 <button @onclick="() => ContextAction(VM.TogglePlaylistPanelCommand)">Playlist &amp; offline settings</button>
             }
@@ -280,6 +332,10 @@
 }
 
 @code {
+    private static readonly JsonSerializerOptions ConversionQueueJsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private readonly List<ConversionQueueEntry> _conversionQueueItems = [];
+    private Timer? _conversionQueueTimer;
+    private int _conversionQueueRefreshActive;
     private bool _menuOpen;
     private MediaItem? _contextItem;
     private CancellationTokenSource? _longPressCancellation;
@@ -294,10 +350,15 @@
         VM.Mounts.CollectionChanged += OnCollectionChanged;
         VM.Playlists.CollectionChanged += OnCollectionChanged;
         VM.OfflineFiles.CollectionChanged += OnCollectionChanged;
+        if (VM.IsConversionQueueVisible)
+        {
+            StartConversionQueuePolling();
+        }
     }
 
     public void Dispose()
     {
+        StopConversionQueuePolling();
         VM.PropertyChanged -= OnVmPropertyChanged;
         VM.Items.CollectionChanged -= OnCollectionChanged;
         VM.Mounts.CollectionChanged -= OnCollectionChanged;
@@ -306,7 +367,16 @@
         CancelLongPress();
     }
 
-    private void OnVmPropertyChanged(object? s, PropertyChangedEventArgs e) => InvokeAsync(StateHasChanged);
+    private void OnVmPropertyChanged(object? s, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainViewModel.IsConversionQueueVisible))
+        {
+            if (VM.IsConversionQueueVisible) StartConversionQueuePolling();
+            else StopConversionQueuePolling();
+        }
+
+        _ = InvokeAsync(StateHasChanged);
+    }
     private void OnCollectionChanged(object? s, NotifyCollectionChangedEventArgs e) => InvokeAsync(StateHasChanged);
 
     private string AppDataMountId
@@ -335,6 +405,147 @@
 
     private void ToggleMenu() => _menuOpen = !_menuOpen;
     private void CloseMenu() => _menuOpen = false;
+
+    private string QueueSummary => _conversionQueueItems.Count == 0
+        ? "No queued conversions"
+        : $"{_conversionQueueItems.Count} job{(_conversionQueueItems.Count == 1 ? string.Empty : "s")}";
+
+    private void CloseConversionQueue() => VM.IsConversionQueueVisible = false;
+
+    private bool CanCancel(ConversionQueueEntry job) => job.State is "queued" or "downloading" or "converting";
+
+    private string QueueStateClass(string state) => $"queue-state-{state.ToLowerInvariant()}";
+
+    private void StartConversionQueuePolling()
+    {
+        if (_conversionQueueTimer is not null)
+        {
+            return;
+        }
+
+        _ = RefreshConversionQueueAsync();
+        _conversionQueueTimer = new Timer(
+            async _ => await RefreshConversionQueueAsync(),
+            null,
+            TimeSpan.FromMilliseconds(750),
+            TimeSpan.FromMilliseconds(750));
+    }
+
+    private void StopConversionQueuePolling()
+    {
+        _conversionQueueTimer?.Dispose();
+        _conversionQueueTimer = null;
+    }
+
+    private async Task RefreshConversionQueueAsync()
+    {
+        if (Interlocked.Exchange(ref _conversionQueueRefreshActive, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            var json = await PlatformServices.BackgroundConversion.GetConversionQueueJsonAsync();
+            var items = JsonSerializer.Deserialize<List<ConversionQueueEntry>>(json, ConversionQueueJsonOptions) ?? [];
+            await InvokeAsync(() =>
+            {
+                _conversionQueueItems.Clear();
+                _conversionQueueItems.AddRange(items);
+                StateHasChanged();
+            });
+        }
+        catch (Exception exception)
+        {
+            VM.Status = exception.Message;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _conversionQueueRefreshActive, 0);
+        }
+    }
+
+    private async Task CancelConversionAsync(string jobId)
+    {
+        try
+        {
+            await PlatformServices.BackgroundConversion.CancelConversionAsync(jobId);
+            await RefreshConversionQueueAsync();
+        }
+        catch (Exception exception)
+        {
+            VM.Status = exception.Message;
+        }
+    }
+
+    private async Task ClearCompletedConversionsAsync()
+    {
+        try
+        {
+            await PlatformServices.BackgroundConversion.ClearCompletedConversionsAsync();
+            await RefreshConversionQueueAsync();
+        }
+        catch (Exception exception)
+        {
+            VM.Status = exception.Message;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes <= 0) return "0 B";
+        var units = new[] { "B", "KB", "MB", "GB", "TB" };
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return $"{value.ToString(value >= 100 || unit == 0 ? "0" : value >= 10 ? "0.0" : "0.##")} {units[unit]}";
+    }
+
+    private static string FormatTotalBytes(long totalBytes) => totalBytes > 0 ? $" / {FormatBytes(totalBytes)}" : string.Empty;
+
+    private static string FormatClock(double seconds)
+    {
+        if (!double.IsFinite(seconds) || seconds <= 0)
+        {
+            return "0:00";
+        }
+
+        var total = Math.Max(0, (int)Math.Round(seconds));
+        return $"{total / 60}:{(total % 60):00}";
+    }
+
+    private static string FormatTotalDuration(double seconds) =>
+        double.IsFinite(seconds) && seconds > 0 ? $" / {FormatClock(seconds)}" : string.Empty;
+
+    private sealed class ConversionQueueEntry
+    {
+        public string Id { get; set; } = string.Empty;
+
+        public string FileName { get; set; } = string.Empty;
+
+        public string MediaKey { get; set; } = string.Empty;
+
+        public string State { get; set; } = "queued";
+
+        public long DownloadedBytes { get; set; }
+
+        public long TotalBytes { get; set; }
+
+        public long CurrentChunkBytes { get; set; }
+
+        public double ConvertedSeconds { get; set; }
+
+        public double DurationSeconds { get; set; }
+
+        public long CurrentSegmentBytes { get; set; }
+
+        public string? ErrorMessage { get; set; }
+    }
 
     private void OnItemAction(MediaItem item)
     {

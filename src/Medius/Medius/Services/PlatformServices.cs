@@ -6,6 +6,8 @@ public static class PlatformServices
 {
     public static IPlaybackHost Playback { get; set; } = new UnsupportedPlaybackHost();
 
+    public static IBackgroundConversionHost BackgroundConversion { get; set; } = new UnsupportedBackgroundConversionHost();
+
     public static IWebAuthenticationHost Authentication { get; set; } = new UnsupportedAuthenticationHost();
 
     public static IMountStore Mounts { get; set; } = new MemoryMountStore();
@@ -30,7 +32,6 @@ public interface IPlaybackHost
         string? mediaKey = null,
         int maxWidth = 854,
         long convertedCacheLimitBytes = 536870912,
-        bool convertWholeFile = false,
         CancellationToken cancellationToken = default);
 
     Task SetSubtitleAsync(string? subtitleWebVtt, CancellationToken cancellationToken = default);
@@ -45,6 +46,24 @@ public interface IPlaybackHost
     Task ClearConvertedCacheAsync(CancellationToken cancellationToken = default);
 
     Task<long> GetConvertedCacheUsageAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IBackgroundConversionHost
+{
+    Task<string> EnqueueConversionAsync(
+        string uri,
+        string fileName,
+        string mediaKey,
+        int maxWidth,
+        long convertedCacheLimitBytes,
+        long sourceSizeBytes,
+        Func<CancellationToken, Task<Uri>>? uriResolver = null);
+
+    Task<string> GetConversionQueueJsonAsync();
+
+    Task CancelConversionAsync(string jobId);
+
+    Task ClearCompletedConversionsAsync();
 }
 
 public sealed record LocalSubtitle(string Name, string Content);
@@ -116,7 +135,6 @@ internal sealed class UnsupportedPlaybackHost : IPlaybackHost
         string? mediaKey = null,
         int maxWidth = 854,
         long convertedCacheLimitBytes = 536870912,
-        bool convertWholeFile = false,
         CancellationToken cancellationToken = default) =>
         throw new PlatformNotSupportedException("HTML5 playback is available in the browser head.");
 
@@ -137,6 +155,28 @@ internal sealed class UnsupportedPlaybackHost : IPlaybackHost
 
     public Task<long> GetConvertedCacheUsageAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(0L);
+}
+
+internal sealed class UnsupportedBackgroundConversionHost : IBackgroundConversionHost
+{
+    public Task<string> EnqueueConversionAsync(
+        string uri,
+        string fileName,
+        string mediaKey,
+        int maxWidth,
+        long convertedCacheLimitBytes,
+        long sourceSizeBytes,
+        Func<CancellationToken, Task<Uri>>? uriResolver = null) =>
+        throw new PlatformNotSupportedException("Background conversion is available in the browser head.");
+
+    public Task<string> GetConversionQueueJsonAsync() =>
+        throw new PlatformNotSupportedException("Background conversion is available in the browser head.");
+
+    public Task CancelConversionAsync(string jobId) =>
+        throw new PlatformNotSupportedException("Background conversion is available in the browser head.");
+
+    public Task ClearCompletedConversionsAsync() =>
+        throw new PlatformNotSupportedException("Background conversion is available in the browser head.");
 }
 
 internal sealed class UnsupportedAuthenticationHost : IWebAuthenticationHost

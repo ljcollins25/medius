@@ -21,7 +21,7 @@
 
   <Target Name="BuildBrowserPlayer"
           BeforeTargets="PrepareForBuild"
-          Inputs="package.json;package-lock.json;player-src.js;build-player.mjs"
+          Inputs="package.json;package-lock.json;player-src.js;ffmpeg-worker.js;build-player.mjs"
           Outputs="wwwroot\player.js;wwwroot\ffmpeg\worker.js;wwwroot\ffmpeg\ffmpeg-core.wasm">
     <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
           Command="npm ci --no-audit --no-fund" />
