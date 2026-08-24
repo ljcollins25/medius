@@ -38,7 +38,7 @@ public partial class MainViewModel : ViewModelBase
             new("720p", 1280),
             new("480p", 854)
         ];
-        SelectedConversionResolution = ConversionResolutions[^1];
+        SelectedConversionResolution = ConversionResolutions[0];
         _ = InitializeAsync();
     }
 

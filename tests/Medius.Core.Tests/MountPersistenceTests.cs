@@ -7,6 +7,15 @@ namespace Medius.Core.Tests;
 public sealed class MountPersistenceTests
 {
     [Fact]
+    public void DefaultsConversionResolutionToOriginal()
+    {
+        var viewModel = new MainViewModel();
+
+        Assert.Equal("Original", viewModel.SelectedConversionResolution?.Name);
+        Assert.Equal(0, viewModel.SelectedConversionResolution?.Width);
+    }
+
+    [Fact]
     public void TogglesSubtitleSettingsMenu()
     {
         var viewModel = new MainViewModel();
