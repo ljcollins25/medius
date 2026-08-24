@@ -155,8 +155,8 @@
                                         <span class="state-badge @QueueStateClass(job.State)">@job.State</span>
                                     </div>
                                     <div class="queue-details muted small">
-                                        <div>Downloaded: @FormatBytes(job.DownloadedBytes)@FormatTotalBytes(job.TotalBytes)</div>
-                                        <div>Current chunk: @FormatBytes(job.CurrentChunkBytes)</div>
+                                        <div>Source fetched: @FormatBytes(job.DownloadedBytes)@FormatTotalBytes(job.TotalBytes)</div>
+                                        <div>Current range read: @FormatBytes(job.CurrentChunkBytes)</div>
                                         <div>Converted: @FormatClock(job.ConvertedSeconds)@FormatTotalDuration(job.DurationSeconds)</div>
                                         <div>Current segment: @FormatBytes(job.CurrentSegmentBytes)</div>
                                         @if (!string.IsNullOrWhiteSpace(job.ErrorMessage))

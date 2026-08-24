@@ -115,6 +115,7 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
 public sealed partial class BrowserBackgroundConversionHost : IBackgroundConversionHost
 {
     private static readonly ConcurrentDictionary<string, UriResolverRegistration> UriResolvers = new();
+    private static readonly ConcurrentDictionary<string, string> JobResolverIds = new();
 
     public async Task<string> EnqueueConversionAsync(
         string uri,
@@ -125,27 +126,47 @@ public sealed partial class BrowserBackgroundConversionHost : IBackgroundConvers
         long sourceSizeBytes,
         Func<CancellationToken, Task<Uri>>? uriResolver = null)
     {
-        var jobId = await EnqueueConversionCoreAsync(
-            uri,
-            fileName,
-            mediaKey,
-            maxWidth,
-            (double)convertedCacheLimitBytes,
-            (double)sourceSizeBytes,
-            deferStart: uriResolver is not null);
+        string? resolverId = null;
         if (uriResolver is not null)
         {
-            UriResolvers[jobId] = new UriResolverRegistration(uriResolver, new CancellationTokenSource());
-            _ = await StartConversionQueueCoreAsync();
+            resolverId = Guid.NewGuid().ToString("N");
+            UriResolvers[resolverId] = new UriResolverRegistration(uriResolver, new CancellationTokenSource());
         }
-        return jobId;
+        try
+        {
+            var jobId = await EnqueueConversionCoreAsync(
+                uri,
+                fileName,
+                mediaKey,
+                maxWidth,
+                (double)convertedCacheLimitBytes,
+                (double)sourceSizeBytes,
+                deferStart: uriResolver is not null,
+                resolverId);
+            if (resolverId is not null && UriResolvers.TryGetValue(resolverId, out var registration))
+            {
+                registration.JobId = jobId;
+                JobResolverIds[jobId] = resolverId;
+                _ = await StartConversionQueueCoreAsync();
+            }
+            return jobId;
+        }
+        catch
+        {
+            if (resolverId is not null)
+            {
+                ReleaseConversionUri(resolverId);
+            }
+            throw;
+        }
     }
 
     public Task<string> GetConversionQueueJsonAsync() => GetConversionQueueCoreAsync();
 
     public async Task CancelConversionAsync(string jobId)
     {
-        if (UriResolvers.TryGetValue(jobId, out var registration))
+        if (JobResolverIds.TryGetValue(jobId, out var resolverId)
+            && UriResolvers.TryGetValue(resolverId, out var registration))
         {
             registration.Cancellation.Cancel();
         }
@@ -156,9 +177,9 @@ public sealed partial class BrowserBackgroundConversionHost : IBackgroundConvers
         _ = await ClearCompletedConversionsCoreAsync();
 
     [JSExport]
-    public static async Task<string> RefreshConversionUri(string jobId, string fallbackUri)
+    public static async Task<string> RefreshConversionUri(string resolverId, string fallbackUri)
     {
-        if (!UriResolvers.TryGetValue(jobId, out var registration))
+        if (!UriResolvers.TryGetValue(resolverId, out var registration))
         {
             return fallbackUri;
         }
@@ -166,10 +187,14 @@ public sealed partial class BrowserBackgroundConversionHost : IBackgroundConvers
     }
 
     [JSExport]
-    public static void ReleaseConversionUri(string jobId)
+    public static void ReleaseConversionUri(string resolverId)
     {
-        if (UriResolvers.TryRemove(jobId, out var registration))
+        if (UriResolvers.TryRemove(resolverId, out var registration))
         {
+            if (registration.JobId is not null)
+            {
+                JobResolverIds.TryRemove(registration.JobId, out _);
+            }
             registration.Cancellation.Dispose();
         }
     }
@@ -183,7 +208,8 @@ public sealed partial class BrowserBackgroundConversionHost : IBackgroundConvers
         int maxWidth,
         double convertedCacheLimitBytes,
         double sourceSizeBytes,
-        bool deferStart);
+        bool deferStart,
+        string? resolverId);
 
     [JSImport("startConversionQueue", "medius-player")]
     [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
@@ -201,9 +227,16 @@ public sealed partial class BrowserBackgroundConversionHost : IBackgroundConvers
     [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
     private static partial Task<bool> ClearCompletedConversionsCoreAsync();
 
-    private sealed record UriResolverRegistration(
-        Func<CancellationToken, Task<Uri>> Resolver,
-        CancellationTokenSource Cancellation);
+    private sealed class UriResolverRegistration(
+        Func<CancellationToken, Task<Uri>> resolver,
+        CancellationTokenSource cancellation)
+    {
+        public Func<CancellationToken, Task<Uri>> Resolver { get; } = resolver;
+
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+
+        public string? JobId { get; set; }
+    }
 }
 
 

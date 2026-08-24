@@ -46,6 +46,14 @@ export function loadMounts() {
     return localStorage.getItem(mountsKey);
 }
 
+function describeSourceRead(downloadedBytes, totalBytes, currentChunkBytes) {
+    const currentChunk = currentChunkBytes > 0
+        ? ` · current range read ${formatBytes(currentChunkBytes)}`
+        : "";
+    return `source fetched ${formatBytes(downloadedBytes)}`
+        + `${formatTotalBytes(totalBytes)}${currentChunk}`;
+}
+
 export async function clearConvertedCache() {
     await withConvertedCacheLock(async () => {
         await caches.delete(convertedCacheName);
@@ -71,30 +79,69 @@ export async function enqueueConversion(
     maxWidth = 854,
     convertedCacheLimitBytes = 536870912,
     sourceSizeBytes = 0,
-    deferStart = false) {
+    deferStart = false,
+    resolverId = null) {
     const normalizedWidth = Math.max(0, Number(maxWidth) || 0);
     const existing = conversionQueue.find(job =>
-        job.kind === "manual"
-        && job.mediaKey === mediaKey
+        job.mediaKey === mediaKey
         && job.maxWidth === normalizedWidth
-        && ["queued", "downloading", "converting"].includes(job.state));
+        && !["cancelled", "error"].includes(job.state));
     if (existing) {
-        return existing.id;
-    }
-    const completed = conversionQueue.find(job =>
-        job.kind === "manual"
-        && job.mediaKey === mediaKey
-        && job.maxWidth === normalizedWidth
-        && job.state === "completed");
-    if (completed) {
-        if (await getFullyCachedDuration(mediaKey, normalizedWidth) !== null) {
-            return completed.id;
+        if (existing.kind === "playback" && existing.state !== "completed") {
+            existing.manualRequested = true;
+            if (resolverId) {
+                if (existing.resolverId) await releaseQueuedUriResolver(existing.resolverId);
+                existing.resolverId = resolverId;
+            }
+        } else if (existing.state === "completed"
+            && await getFullyCachedDuration(mediaKey, normalizedWidth) === null) {
+            conversionQueue.splice(conversionQueue.indexOf(existing), 1);
+            await releaseQueuedUriResolver(existing.resolverId);
+        } else {
+            await releaseQueuedUriResolver(resolverId);
+            return existing.id;
         }
-        conversionQueue.splice(conversionQueue.indexOf(completed), 1);
-        await releaseQueuedUriResolver(completed.id);
+        if (conversionQueue.includes(existing)) return existing.id;
+    }
+    for (let index = conversionQueue.length - 1; index >= 0; index--) {
+        const stale = conversionQueue[index];
+        if (stale.mediaKey === mediaKey
+            && stale.maxWidth === normalizedWidth
+            && ["cancelled", "error"].includes(stale.state)) {
+            conversionQueue.splice(index, 1);
+            await releaseQueuedUriResolver(stale.resolverId);
+        }
     }
 
     const cachedDuration = await getFullyCachedDuration(mediaKey, normalizedWidth);
+    if (cachedDuration !== null) {
+        const completed = {
+            id: `conversion-${++conversionQueueSequence}`,
+            kind: "manual",
+            uri,
+            fileName,
+            mediaKey,
+            maxWidth: normalizedWidth,
+            convertedCacheLimitBytes: Math.max(0, Number(convertedCacheLimitBytes) || 0),
+            sourceSizeBytes: Math.max(0, Number(sourceSizeBytes) || 0),
+            state: "completed",
+            downloadedBytes: 0,
+            totalBytes: 0,
+            currentChunkBytes: 0,
+            convertedSeconds: cachedDuration,
+            durationSeconds: cachedDuration,
+            currentSegmentBytes: 0,
+            errorMessage: null,
+            cancelled: false,
+            abortController: null,
+            session: null,
+            resolverId: null
+        };
+        conversionQueue.push(completed);
+        await releaseQueuedUriResolver(resolverId);
+        return completed.id;
+    }
+
     const job = {
         id: `conversion-${++conversionQueueSequence}`,
         kind: "manual",
@@ -104,20 +151,21 @@ export async function enqueueConversion(
         maxWidth: normalizedWidth,
         convertedCacheLimitBytes: Math.max(0, Number(convertedCacheLimitBytes) || 0),
         sourceSizeBytes: Math.max(0, Number(sourceSizeBytes) || 0),
-        state: cachedDuration !== null ? "completed" : "queued",
+        state: "queued",
         downloadedBytes: 0,
         totalBytes: 0,
         currentChunkBytes: 0,
-        convertedSeconds: cachedDuration ?? 0,
-        durationSeconds: cachedDuration ?? 0,
+        convertedSeconds: 0,
+        durationSeconds: 0,
         currentSegmentBytes: 0,
         errorMessage: null,
         cancelled: false,
         abortController: null,
-        session: null
+        session: null,
+        resolverId
     };
     conversionQueue.push(job);
-    if (cachedDuration === null && !deferStart) {
+    if (!deferStart) {
         void ensureBackgroundQueueRunner();
     }
 
@@ -146,12 +194,13 @@ export async function cancelConversion(jobId) {
             job.session.backgroundCacheEnabled = false;
             job.session = null;
         }
+        await releaseQueuedUriResolver(job.resolverId);
         return true;
     }
 
     if (job.state === "queued") {
         job.state = "cancelled";
-        await releaseQueuedUriResolver(job.id);
+        await releaseQueuedUriResolver(job.resolverId);
         return true;
     }
 
@@ -168,7 +217,7 @@ export async function cancelConversion(jobId) {
 export async function clearCompletedConversions() {
     for (let index = conversionQueue.length - 1; index >= 0; index--) {
         if (["completed", "error", "cancelled"].includes(conversionQueue[index].state)) {
-            await releaseQueuedUriResolver(conversionQueue[index].id);
+            await releaseQueuedUriResolver(conversionQueue[index].resolverId);
             conversionQueue.splice(index, 1);
         }
     }
@@ -945,7 +994,7 @@ async function playTranscodedSegments(
         backgroundCacheCompleted: false,
         backgroundJob: null
     };
-    session.backgroundJob = createPlaybackBackgroundJob(session);
+    session.backgroundJob = await createPlaybackBackgroundJob(session);
 
     // Hand control back as soon as playback starts; conversion continues in the background.
     let signalStarted;
@@ -964,14 +1013,37 @@ async function playTranscodedSegments(
     await Promise.race([started, loop]);
 }
 
-function createPlaybackBackgroundJob(session) {
+async function createPlaybackBackgroundJob(session) {
+    const existing = conversionQueue.find(job =>
+        job.mediaKey === session.mediaKey
+        && job.maxWidth === session.maxWidth
+        && !["cancelled", "error"].includes(job.state));
+    if (existing) {
+        if (existing.state !== "completed"
+            || await getFullyCachedDuration(session.mediaKey, session.maxWidth) !== null) {
+            session.backgroundCacheEnabled = false;
+            return null;
+        }
+        conversionQueue.splice(conversionQueue.indexOf(existing), 1);
+        await releaseQueuedUriResolver(existing.resolverId);
+    }
+    for (let index = conversionQueue.length - 1; index >= 0; index--) {
+        const stale = conversionQueue[index];
+        if (stale.mediaKey === session.mediaKey && stale.maxWidth === session.maxWidth) {
+            conversionQueue.splice(index, 1);
+            await releaseQueuedUriResolver(stale.resolverId);
+        }
+    }
+
     const job = {
         id: `playback-${session.generation}`,
         kind: "playback",
         fileName: session.fileName,
+        uri: session.uri,
         mediaKey: session.mediaKey,
         maxWidth: session.maxWidth,
         convertedCacheLimitBytes: session.convertedCacheLimitBytes,
+        sourceSizeBytes: session.sourceSizeBytes,
         state: "downloading",
         downloadedBytes: 0,
         totalBytes: 0,
@@ -982,7 +1054,9 @@ function createPlaybackBackgroundJob(session) {
         errorMessage: null,
         cancelled: false,
         abortController: null,
-        session
+        session,
+        manualRequested: false,
+        resolverId: null
     };
     conversionQueue.unshift(job);
     return job;
@@ -1029,6 +1103,7 @@ async function completePlaybackBackgroundJob(session, convertedSeconds) {
     job.currentChunkBytes = 0;
     session.backgroundCacheCompleted = true;
     job.session = null;
+    await releaseQueuedUriResolver(job.resolverId);
 }
 
 async function finalizePlaybackBackgroundJob(session, cachePosition) {
@@ -1042,8 +1117,19 @@ async function finalizePlaybackBackgroundJob(session, cachePosition) {
         return;
     }
 
+    if (job.manualRequested && !job.cancelled) {
+        job.kind = "manual";
+        job.state = "queued";
+        job.session = null;
+        job.convertedSeconds = cachePosition;
+        job.currentSegmentBytes = 0;
+        void ensureBackgroundQueueRunner();
+        return;
+    }
+
     job.state = "cancelled";
     job.session = null;
+    await releaseQueuedUriResolver(job.resolverId);
 }
 
 async function runManualConversionJob(job) {
@@ -1070,7 +1156,7 @@ async function runManualConversionJob(job) {
 
     try {
         job.state = "downloading";
-        job.uri = await refreshQueuedConversionUri(job.id, job.uri);
+        job.uri = await refreshQueuedConversionUri(job.resolverId, job.uri);
         if (job.cancelled) throw new DOMException("Cancelled", "AbortError");
         const updateProgress = (progress, totalArg = 0, currentChunkArg = 0) => {
             const downloaded = typeof progress === "number"
@@ -1082,7 +1168,7 @@ async function runManualConversionJob(job) {
             const currentChunk = typeof progress === "number"
                 ? currentChunkArg
                 : progress.currentChunkBytes ?? progress.currentChunk ?? 0;
-            job.state = "downloading";
+            if (job.state === "queued") job.state = "downloading";
             job.downloadedBytes = downloaded;
             job.totalBytes = total;
             job.currentChunkBytes = currentChunk;
@@ -1176,7 +1262,7 @@ async function runManualConversionJob(job) {
         }
     } finally {
         job.abortController = null;
-        await releaseQueuedUriResolver(job.id);
+        await releaseQueuedUriResolver(job.resolverId);
         await Promise.allSettled([
             releaseInput(session.input),
             cleanupBackgroundFfmpegFiles("segment.mp4")
@@ -1193,7 +1279,8 @@ async function getBackgroundConversionExports() {
     return browserAssemblyExports;
 }
 
-async function refreshQueuedConversionUri(jobId, fallbackUri) {
+async function refreshQueuedConversionUri(resolverId, fallbackUri) {
+    if (!resolverId) return fallbackUri;
     let exports;
     try {
         exports = await getBackgroundConversionExports();
@@ -1201,13 +1288,14 @@ async function refreshQueuedConversionUri(jobId, fallbackUri) {
         console.warn("Could not refresh the queued media URL; using the original URL.", error);
         return fallbackUri;
     }
-    return await exports.RefreshConversionUri(jobId, fallbackUri);
+    return await exports.RefreshConversionUri(resolverId, fallbackUri);
 }
 
-async function releaseQueuedUriResolver(jobId) {
+async function releaseQueuedUriResolver(resolverId) {
+    if (!resolverId) return;
     try {
         const exports = await getBackgroundConversionExports();
-        exports.ReleaseConversionUri(jobId);
+        exports.ReleaseConversionUri(resolverId);
     } catch {
         // The direct player harness has no .NET host or resolver to release.
     }
@@ -1400,19 +1488,24 @@ async function convertSegment(session, start, duration) {
     const capture = Number.isNaN(session.probe.durationSeconds);
     const lines = [];
     ffmpegLogSink = capture ? lines : undefined;
+    session.currentConversionLabel = `converting ${duration}s segment at ${formatClock(start)}`;
     const previousSegment = session.lastSegmentBytes
         ? ` · previous ${session.lastSegmentDuration}s segment ${formatBytes(session.lastSegmentBytes)}`
         : "";
     setPlayerStatus(
         "Converting",
         `${session.fileName} — converting ${duration}s segment at ${formatClock(start)}`
-        + ` · downloaded ${formatBytes(session.downloadedBytes)}${formatTotalBytes(session.totalBytes)}`
+        + ` · ${describeSourceRead(
+            session.downloadedBytes,
+            session.totalBytes,
+            session.currentDownloadChunkBytes)}`
         + previousSegment);
     let exitCode;
     try {
         exitCode = await ffmpeg.exec(buildSegmentArgs(session, outputName, start, duration), 180000);
     } finally {
         ffmpegLogSink = undefined;
+        session.currentConversionLabel = null;
     }
     if (!session.isCurrent() || exitCode !== 0) return null;
 
@@ -1442,6 +1535,7 @@ async function convertSegment(session, start, duration) {
 async function probeSessionInput(session) {
     const lines = [];
     ffmpegLogSink = lines;
+    session.currentConversionLabel = "analyzing streams";
     try {
         await ffmpeg.exec([
             "-hide_banner",
@@ -1453,6 +1547,7 @@ async function probeSessionInput(session) {
         ], 30000);
     } finally {
         ffmpegLogSink = undefined;
+        session.currentConversionLabel = null;
     }
     session.probe = parseProbe(lines.join("\n"));
 }
@@ -1697,7 +1792,10 @@ async function waitForBufferRoom(session, position) {
         setPlayerStatus(
             "Buffered",
             `${session.fileName} — ${bufferedAhead.toFixed(0)}s ready ahead`
-            + ` · downloaded ${formatBytes(session.downloadedBytes)}${formatTotalBytes(session.totalBytes)}`);
+            + ` · ${describeSourceRead(
+                session.downloadedBytes,
+                session.totalBytes,
+                session.currentDownloadChunkBytes)}`);
         reportStatus(session, position, true);
         await delay(250);
     }
@@ -1727,7 +1825,10 @@ function reportStatus(session, convertedSeconds, playing) {
         setPlayerStatus(
             "Converting",
             `${session.fileName} — converting first ${session.lastSegmentDuration ?? FIRST_SEGMENT_SECONDS}s segment`
-            + ` · downloaded ${formatBytes(session.downloadedBytes)}${formatTotalBytes(session.totalBytes)}`);
+            + ` · ${describeSourceRead(
+                session.downloadedBytes,
+                session.totalBytes,
+                session.currentDownloadChunkBytes)}`);
         return;
     }
 
@@ -1740,7 +1841,10 @@ function reportStatus(session, convertedSeconds, playing) {
         : "";
     status().textContent =
         `${session.fileName} — converted ${formatClock(convertedSeconds)}${total} (${ahead.toFixed(0)}s ahead)`
-        + ` · downloaded ${formatBytes(session.downloadedBytes)}${formatTotalBytes(session.totalBytes)}`
+        + ` · ${describeSourceRead(
+            session.downloadedBytes,
+            session.totalBytes,
+            session.currentDownloadChunkBytes)}`
         + segment;
 }
 
@@ -1989,11 +2093,19 @@ async function ensureSessionInput(session) {
         session.downloadedBytes = downloaded;
         session.totalBytes = total;
         session.currentDownloadChunkBytes = currentChunk;
-        syncPlaybackBackgroundJob(session, "downloading");
         if (!session.isCurrent()) return;
-        const detail = describeDownload(session.fileName, downloaded, total, currentChunk);
-        setPlayerStatus("Downloading", detail);
-        if (!session.player) showLoading(detail);
+        if (session.input) {
+            syncPlaybackBackgroundJob(session, "converting");
+            setPlayerStatus(
+                "Converting",
+                `${session.fileName} — ${session.currentConversionLabel ?? "converting"}`
+                + ` · ${describeSourceRead(downloaded, total, currentChunk)}`);
+        } else {
+            syncPlaybackBackgroundJob(session, "downloading");
+            const detail = describeDownload(session.fileName, downloaded, total, currentChunk);
+            setPlayerStatus("Downloading", detail);
+            if (!session.player) showLoading(detail);
+        }
     };
     const controller = new AbortController();
     activeDownloadController = controller;

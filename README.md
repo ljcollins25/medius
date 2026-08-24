@@ -69,7 +69,7 @@ The browser requests persistent Cache Storage, and a service worker caches the a
 
 ## Background conversion queue
 
-Use a video's context menu action **Add to background conversion queue** to pre-convert it into the segmented browser cache without starting playback. Open **Menu → Background conversions** to watch queued, downloading, converting, completed, cancelled, or failed jobs, cancel pending work, and clear finished entries.
+Use a video's context menu action **Add to background conversion queue** to pre-convert it into the segmented browser cache without starting playback. Open **Menu → Background conversions** to watch queued, downloading, converting, completed, cancelled, or failed jobs, cancel pending work, and clear finished entries. Repeated requests for the same media and resolution are coalesced into one queue entry.
 
 Manual queue jobs run one at a time in a dedicated background ffmpeg.wasm worker so playback remains independent. During Transcode playback, the current video also appears in this panel while Medius fills cache entries ahead of the playhead; cancelling that entry stops future background-only cache fill but does not stop playback.
 
