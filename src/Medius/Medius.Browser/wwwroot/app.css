@@ -132,7 +132,7 @@ body {
     white-space: nowrap;
 }
 
-.avalonia-splash {
+.loading-splash {
     position: absolute;
     inset: 0;
     display: grid;
@@ -142,7 +142,7 @@ body {
     pointer-events: none;
 }
 
-.avalonia-splash.splash-close {
+.loading-splash.splash-close {
     display: none;
 }
 
@@ -204,6 +204,7 @@ body {
     font-size: .82rem;
     line-height: 1.45;
 }
+
 
 @media (max-width: 760px) {
     body {

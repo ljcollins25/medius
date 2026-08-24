@@ -5,13 +5,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#08111f">
+    <base href="./">
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="stylesheet" href="./app.css">
+    <link rel="stylesheet" href="./medius.css">
 </head>
 <body>
     <main id="workspace">
         <section id="out">
-            <div class="avalonia-splash">Loading Medius…</div>
+            <div class="loading-splash">Loading Medius…</div>
         </section>
         <section id="player-shell" class="collapsed">
             <button id="player-preview-toggle"
@@ -60,6 +62,6 @@
                 .catch(error => window.__mediusErrors.push(error?.stack ?? String(error)));
         }
     </script>
-    <script type="module" src="./main.js"></script>
+    <script src="_framework/blazor.webassembly.js" autostart="true"></script>
 </body>
 </html>

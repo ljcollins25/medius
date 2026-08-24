@@ -1,27 +1,22 @@
-﻿using System.Runtime.InteropServices.JavaScript;
-using System.Threading.Tasks;
-using Avalonia;
-using Avalonia.Browser;
-using Medius;
+using System.Runtime.InteropServices.JavaScript;
+using Microsoft.AspNetCore.Components.Web;
+using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 using Medius.Browser;
 using Medius.Services;
+using Medius.ViewModels;
 
-internal sealed partial class Program
-{
-    private static async Task Main(string[] args)
-    {
-        await JSHost.ImportAsync("medius-player", "../player.js?v=6");
-        PlatformServices.Playback = new BrowserPlaybackHost();
-        PlatformServices.Authentication = new BrowserAuthenticationHost();
-        PlatformServices.Mounts = new BrowserMountStore();
-        PlatformServices.Offline = new BrowserOfflineMediaStore();
-        PlatformServices.StateProtector = new BrowserAppStateProtector();
-        PlatformServices.PortableAppData = new BrowserPortableAppDataHost();
-        await BuildAvaloniaApp()
-            .WithInterFont()
-            .StartBrowserAppAsync("out");
-    }
+var builder = WebAssemblyHostBuilder.CreateDefault(args);
+builder.RootComponents.Add<App>("#out");
+builder.RootComponents.Add<HeadOutlet>("head::after");
 
-    public static AppBuilder BuildAvaloniaApp()
-        => AppBuilder.Configure<App>();
-}
+await JSHost.ImportAsync("medius-player", "../player.js?v=6");
+PlatformServices.Playback = new BrowserPlaybackHost();
+PlatformServices.Authentication = new BrowserAuthenticationHost();
+PlatformServices.Mounts = new BrowserMountStore();
+PlatformServices.Offline = new BrowserOfflineMediaStore();
+PlatformServices.StateProtector = new BrowserAppStateProtector();
+PlatformServices.PortableAppData = new BrowserPortableAppDataHost();
+
+builder.Services.AddSingleton<MainViewModel>();
+
+await builder.Build().RunAsync();

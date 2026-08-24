@@ -1,0 +1,441 @@
+@using Medius.ViewModels
+@using Medius.Core
+@using Medius.Services
+@using System.Collections.Specialized
+@using System.ComponentModel
+@implements IDisposable
+@inject MainViewModel VM
+
+<div class="medius-root">
+    <header class="medius-header">
+        <div class="header-left">
+            <div class="header-logo">M</div>
+            <div class="header-info">
+                <span class="header-title">Medius</span>
+                <span class="header-location">@VM.CurrentLocation</span>
+            </div>
+        </div>
+        <div class="header-menu">
+            <button class="menu-toggle" @onclick="ToggleMenu">Menu</button>
+            @if (_menuOpen)
+            {
+                <div class="menu-dropdown" @onclick="CloseMenu">
+                    <button @onclick="() => VM.ShowMountsCommand.Execute(null)">Mounts</button>
+                    <button @onclick="() => VM.ShowOfflineCommand.Execute(null)">Offline files</button>
+                    <button @onclick="() => VM.ShowPlaylistsCommand.Execute(null)">Playlists</button>
+                    <button @onclick="() => VM.ShowHistoryCommand.Execute(null)">History</button>
+                    <hr />
+                    <button @onclick="() => VM.ShowAddMountCommand.Execute(null)">Add storage mount…</button>
+                    <button @onclick="() => VM.RemoveMountCommand.Execute(null)">Remove current mount</button>
+                    <button @onclick="() => VM.ToggleAppDataPanelCommand.Execute(null)">App data sync…</button>
+                </div>
+            }
+        </div>
+    </header>
+
+    <div class="medius-body">
+        @if (VM.IsMountEditorVisible)
+        {
+            <div class="panel-overlay">
+                <div class="panel-card">
+                    <div class="panel-header">
+                        <div>
+                            <div class="panel-title">Add storage</div>
+                            <div class="panel-subtitle">Connect a cloud folder as a library</div>
+                        </div>
+                        <button class="btn" @onclick="() => VM.CancelMountCommand.Execute(null)">Close</button>
+                    </div>
+                    <input type="text" placeholder="Mount name" @bind="VM.MountName" @bind:event="oninput" />
+                    <select @bind="VM.ProviderKind">
+                        @foreach (var kind in VM.ProviderKinds)
+                        {
+                            <option value="@kind">@kind</option>
+                        }
+                    </select>
+                    <input type="text" placeholder="Container/share SAS URL or endpoint" @bind="VM.Endpoint" @bind:event="oninput" />
+                    <div class="row-2col">
+                        <input type="text" placeholder="Account name" @bind="VM.AccountName" @bind:event="oninput" />
+                        <input type="text" placeholder="Root folder" @bind="VM.RootPath" @bind:event="oninput" />
+                    </div>
+                    <input type="password" placeholder="Account key or OAuth token" @bind="VM.Credential" @bind:event="oninput" />
+                    <div class="row-2col">
+                        <input type="text" placeholder="Tenant" @bind="VM.TenantId" @bind:event="oninput" />
+                        <input type="text" placeholder="Entra client ID" @bind="VM.ClientId" @bind:event="oninput" />
+                    </div>
+                    <div class="row-2col">
+                        <button class="btn accent" @onclick="() => VM.SaveMountCommand.Execute(null)">Save mount</button>
+                        <button class="btn" @onclick="() => VM.SignInCommand.Execute(null)">Sign in</button>
+                    </div>
+                </div>
+            </div>
+        }
+
+        @if (VM.IsAppDataPanelVisible)
+        {
+            <div class="panel-overlay">
+                <div class="panel-card">
+                    <div class="panel-header">
+                        <div>
+                            <div class="panel-title">Encrypted app data</div>
+                            <div class="panel-subtitle">Sync mounts, playlists, history, and offline metadata</div>
+                        </div>
+                        <button class="btn" @onclick="() => VM.ToggleAppDataPanelCommand.Execute(null)">Close</button>
+                    </div>
+                    <strong>Restore or transfer</strong>
+                    <p class="muted small">Import needs only the file passphrase. Scanning a QR adds its mount automatically.</p>
+                    <input type="password" placeholder="File passphrase" @bind="VM.AppDataPassphrase" @bind:event="oninput" />
+                    @if (VM.SupportsPortableAppData)
+                    {
+                        <div class="row-2col">
+                            <button class="btn" @onclick="() => VM.ImportAppDataCommand.Execute(null)">Import encrypted file</button>
+                            <button class="btn" @onclick="() => VM.ExportAppDataCommand.Execute(null)">Export encrypted file</button>
+                        </div>
+                        <div class="row-2col">
+                            <button class="btn" @onclick="() => VM.ScanSyncQrCameraCommand.Execute(null)">Scan QR camera</button>
+                            <button class="btn" @onclick="() => VM.ScanSyncQrFileCommand.Execute(null)">Scan QR image</button>
+                        </div>
+                    }
+                    <hr class="separator" />
+                    <strong>Cloud sync destination</strong>
+                    <p class="muted small">A mount is required only for upload, download, and generating a QR.</p>
+                    <select @bind="AppDataMountId">
+                        <option value="">— Storage mount —</option>
+                        @foreach (var m in VM.Mounts)
+                        {
+                            <option value="@m.Id">@m.Name</option>
+                        }
+                    </select>
+                    <input type="text" placeholder="Encrypted state path" @bind="VM.AppDataPath" @bind:event="oninput" />
+                    <p class="muted small">The selected mount's own credential remains only on this device.</p>
+                    <div class="row-2col">
+                        <button class="btn accent" @onclick="() => VM.SaveAppDataSettingsCommand.Execute(null)">Save &amp; upload</button>
+                        <button class="btn" @onclick="() => VM.PullAppDataCommand.Execute(null)">Download &amp; merge</button>
+                    </div>
+                    @if (VM.SupportsPortableAppData)
+                    {
+                        <p class="muted small warning">QR quick setup includes the mount credential and passphrase. Anyone who scans it can access your synced state.</p>
+                        <button class="btn" @onclick="() => VM.ShowSyncQrCommand.Execute(null)">Show setup QR</button>
+                    }
+                    <p class="muted small">@VM.Status</p>
+                </div>
+            </div>
+        }
+
+        <div class="browser-toolbar">
+            <button class="btn icon-btn" @onclick="() => VM.UpCommand.Execute(null)">‹</button>
+            <span class="toolbar-location">@VM.CurrentLocation</span>
+            <button class="btn icon-btn" @onclick="() => VM.RefreshCommand.Execute(null)">↻</button>
+            @if (VM.IsBusy)
+            {
+                <div class="busy-indicator"></div>
+            }
+        </div>
+
+        <div class="item-list">
+            @foreach (var item in VM.Items)
+            {
+                <div class="item-row"
+                     @oncontextmenu="(e) => OnContextMenu(e, item)"
+                     @oncontextmenu:preventDefault="true"
+                     @onpointerdown="(e) => OnPointerDown(e, item)"
+                     @onpointermove="OnPointerMove"
+                     @onpointerup="OnPointerReleased"
+                     @onpointercancel="OnPointerReleased">
+                    <button class="item-icon-btn" @onclick="() => OnItemAction(item)">
+                        @GetIcon(item)
+                    </button>
+                    <button class="item-name-btn" @onclick="() => OnItemClick(item)" @ondblclick="() => OnItemDblClick(item)">
+                        <div class="item-name">@item.Name</div>
+                        <div class="item-detail muted">@GetDetail(item)</div>
+                    </button>
+                    <button class="item-menu-btn" @onclick="() => OnItemMenuClick(item)">•••</button>
+                </div>
+            }
+        </div>
+
+        <div class="bottom-panel">
+            <button class="panel-toggle" @onclick="() => VM.ToggleSubtitleMenuCommand.Execute(null)">
+                <span class="toggle-icon cc-icon">CC</span>
+                <span class="toggle-info">
+                    <span class="toggle-title">Subtitles</span>
+                    <span class="toggle-subtitle muted">@VM.SelectedSubtitleLabel</span>
+                </span>
+                <span class="toggle-arrow">@(VM.IsSubtitleMenuOpen ? "▼" : "▲")</span>
+            </button>
+            @if (VM.IsSubtitleMenuOpen)
+            {
+                <div class="sub-panel">
+                    <div class="row-2col">
+                        <label class="field">
+                            <span class="muted small">Sync offset (ms)</span>
+                            <input type="number" step="100" @bind="VM.SubtitleOffsetMilliseconds" />
+                        </label>
+                        <label class="field">
+                            <span class="muted small">Font size (%)</span>
+                            <input type="number" step="10" min="50" max="200" @bind="VM.SubtitleFontSizePercent" />
+                        </label>
+                    </div>
+                    <label class="field">
+                        <span class="muted small">Background opacity (%)</span>
+                        <input type="number" step="10" min="0" max="100" @bind="VM.SubtitleBackgroundOpacityPercent" />
+                    </label>
+                    <button class="btn full-width" @onclick="() => VM.ChooseLocalSubtitleCommand.Execute(null)">Choose subtitle file</button>
+                    <button class="btn full-width" @onclick="() => VM.ClearSubtitleCommand.Execute(null)">Use automatic subtitles</button>
+                </div>
+            }
+            <button class="panel-toggle" @onclick="() => VM.TogglePlaylistPanelCommand.Execute(null)">
+                <span class="toggle-icon pl-icon">≡</span>
+                <span class="toggle-info">
+                    <span class="toggle-title">Playlists &amp; offline</span>
+                    <span class="toggle-subtitle muted">@VM.OfflineStorageLabel</span>
+                </span>
+                <span class="toggle-arrow">@(VM.IsPlaylistPanelVisible ? "▼" : "▲")</span>
+            </button>
+            @if (VM.IsPlaylistPanelVisible)
+            {
+                <div class="sub-panel">
+                    <div class="row-2col">
+                        <input type="text" placeholder="New playlist name" @bind="VM.NewPlaylistName" @bind:event="oninput" />
+                        <button class="btn" @onclick="() => VM.CreatePlaylistCommand.Execute(null)">Create</button>
+                    </div>
+                    <select @bind="SelectedPlaylistId">
+                        <option value="">— Target playlist —</option>
+                        @foreach (var pl in VM.Playlists)
+                        {
+                            <option value="@pl.Id">@pl.Name</option>
+                        }
+                    </select>
+                    <div class="row-2col">
+                        <label class="field">
+                            <span class="muted small">Start seconds</span>
+                            <input type="number" min="0" max="86400" @bind="VM.PlaylistStartSeconds" />
+                        </label>
+                        <label class="field">
+                            <span class="muted small">End seconds</span>
+                            <input type="number" min="0" max="86400" @bind="VM.PlaylistEndSeconds" />
+                        </label>
+                    </div>
+                    <span class="muted small bold">Conversion</span>
+                    <div class="row-2col">
+                        <label class="field">
+                            <span class="muted small">Resolution</span>
+                            <select @bind="SelectedResolutionIndex">
+                                @for (var i = 0; i < VM.ConversionResolutions.Count; i++)
+                                {
+                                    <option value="@i">@VM.ConversionResolutions[i].Name</option>
+                                }
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span class="muted small">Cache limit (MB)</span>
+                            <input type="number" step="128" min="0" max="16384" @bind="VM.ConvertedCacheSizeMb" />
+                        </label>
+                    </div>
+                    <div class="row-2col">
+                        <span class="muted small">@VM.ConvertedCacheLabel</span>
+                        <button class="btn" @onclick="() => VM.ClearConvertedCacheCommand.Execute(null)">Clear converted cache</button>
+                    </div>
+                    <div class="row-3col">
+                        <button class="btn" @onclick="() => VM.TogglePlaylistOfflineCommand.Execute(null)">Pin playlist</button>
+                        <button class="btn" @onclick="() => VM.RemoveSelectedPlaylistEntryCommand.Execute(null)">Remove item</button>
+                        <button class="btn" @onclick="() => VM.ClearCurrentPlaylistCommand.Execute(null)">Clear</button>
+                    </div>
+                    <div class="row-3col">
+                        <button class="btn" @onclick="() => VM.ShowOfflineCommand.Execute(null)">Offline</button>
+                        <button class="btn" @onclick="() => VM.ShowPlaylistsCommand.Execute(null)">Playlists</button>
+                        <button class="btn" @onclick="() => VM.ShowHistoryCommand.Execute(null)">History</button>
+                    </div>
+                    <button class="btn full-width" @onclick="() => VM.DeleteSelectedPlaylistCommand.Execute(null)">Delete selected playlist</button>
+                </div>
+            }
+            <button class="btn full-width" @onclick="() => VM.ShowAddMountCommand.Execute(null)">+ Add storage</button>
+            <p class="status muted small">@VM.Status</p>
+        </div>
+    </div>
+</div>
+
+@if (_contextItem is not null)
+{
+    <div class="context-backdrop" @onclick="CloseContextMenu">
+        <div class="context-menu">
+            <button @onclick="() => ContextAction(VM.OpenCommand)">
+                @(_contextItem.IsDirectory ? "Open" : MediaTypes.IsVideo(_contextItem) ? "Play" : "Apply")
+            </button>
+            @if (MediaTypes.IsVideo(_contextItem))
+            {
+                <button @onclick="() => ContextAction(VM.AddSelectedToPlaylistCommand)">Add to selected playlist</button>
+                <button @onclick="() => ContextAction(VM.KeepSelectedOfflineCommand)">Keep offline</button>
+                <button @onclick="() => ContextAction(VM.RemoveSelectedOfflineCommand)">Remove offline copy</button>
+                <button @onclick="() => ContextAction(VM.TogglePlaylistPanelCommand)">Playlist &amp; offline settings</button>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private bool _menuOpen;
+    private MediaItem? _contextItem;
+    private CancellationTokenSource? _longPressCancellation;
+    private double _longPressX;
+    private double _longPressY;
+    private bool _suppressNextClick;
+
+    protected override void OnInitialized()
+    {
+        VM.PropertyChanged += OnVmPropertyChanged;
+        VM.Items.CollectionChanged += OnCollectionChanged;
+        VM.Mounts.CollectionChanged += OnCollectionChanged;
+        VM.Playlists.CollectionChanged += OnCollectionChanged;
+        VM.OfflineFiles.CollectionChanged += OnCollectionChanged;
+    }
+
+    public void Dispose()
+    {
+        VM.PropertyChanged -= OnVmPropertyChanged;
+        VM.Items.CollectionChanged -= OnCollectionChanged;
+        VM.Mounts.CollectionChanged -= OnCollectionChanged;
+        VM.Playlists.CollectionChanged -= OnCollectionChanged;
+        VM.OfflineFiles.CollectionChanged -= OnCollectionChanged;
+        CancelLongPress();
+    }
+
+    private void OnVmPropertyChanged(object? s, PropertyChangedEventArgs e) => InvokeAsync(StateHasChanged);
+    private void OnCollectionChanged(object? s, NotifyCollectionChangedEventArgs e) => InvokeAsync(StateHasChanged);
+
+    private string AppDataMountId
+    {
+        get => VM.AppDataMount?.Id ?? "";
+        set => VM.AppDataMount = VM.Mounts.FirstOrDefault(m => m.Id == value);
+    }
+
+    private string SelectedPlaylistId
+    {
+        get => VM.SelectedPlaylist?.Id ?? "";
+        set => VM.SelectedPlaylist = VM.Playlists.FirstOrDefault(p => p.Id == value);
+    }
+
+    private int SelectedResolutionIndex
+    {
+        get
+        {
+            if (VM.SelectedConversionResolution is null) return 0;
+            for (var i = 0; i < VM.ConversionResolutions.Count; i++)
+                if (VM.ConversionResolutions[i] == VM.SelectedConversionResolution) return i;
+            return 0;
+        }
+        set => VM.SelectedConversionResolution = VM.ConversionResolutions[value];
+    }
+
+    private void ToggleMenu() => _menuOpen = !_menuOpen;
+    private void CloseMenu() => _menuOpen = false;
+
+    private void OnItemAction(MediaItem item)
+    {
+        if (ConsumeSuppressedClick()) return;
+        VM.SelectedItem = item;
+        VM.OpenCommand.Execute(null);
+    }
+
+    private void OnItemClick(MediaItem item)
+    {
+        if (ConsumeSuppressedClick()) return;
+        VM.SelectedItem = item;
+        if (MediaTypes.IsSubtitle(item))
+        {
+            VM.OpenCommand.Execute(null);
+            return;
+        }
+    }
+
+    private void OnItemDblClick(MediaItem item)
+    {
+        if (ConsumeSuppressedClick()) return;
+        VM.SelectedItem = item;
+        VM.OpenCommand.Execute(null);
+    }
+
+    private void OnItemMenuClick(MediaItem item)
+    {
+        if (ConsumeSuppressedClick()) return;
+        VM.SelectedItem = item;
+        _contextItem = item;
+    }
+
+    private void OnContextMenu(MouseEventArgs e, MediaItem item)
+    {
+        VM.SelectedItem = item;
+        _contextItem = item;
+    }
+
+    private void ContextAction(System.Windows.Input.ICommand cmd)
+    {
+        cmd.Execute(null);
+        _contextItem = null;
+    }
+
+    private void CloseContextMenu() => _contextItem = null;
+
+    private void OnPointerDown(PointerEventArgs eventArgs, MediaItem item)
+    {
+        if (eventArgs.PointerType != "touch") return;
+        CancelLongPress();
+        _longPressX = eventArgs.ClientX;
+        _longPressY = eventArgs.ClientY;
+        _longPressCancellation = new CancellationTokenSource();
+        _ = OpenContextAfterLongPressAsync(item, _longPressCancellation);
+    }
+
+    private void OnPointerMove(PointerEventArgs eventArgs)
+    {
+        if (eventArgs.PointerType != "touch") return;
+        if (Math.Abs(eventArgs.ClientX - _longPressX) > 12
+            || Math.Abs(eventArgs.ClientY - _longPressY) > 12)
+        {
+            CancelLongPress();
+        }
+    }
+
+    private void OnPointerReleased(PointerEventArgs eventArgs) => CancelLongPress();
+
+    private async Task OpenContextAfterLongPressAsync(MediaItem item, CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await Task.Delay(650, cancellation.Token);
+            if (!ReferenceEquals(_longPressCancellation, cancellation)) return;
+            VM.SelectedItem = item;
+            _contextItem = item;
+            _suppressNextClick = true;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void CancelLongPress()
+    {
+        _longPressCancellation?.Cancel();
+        _longPressCancellation?.Dispose();
+        _longPressCancellation = null;
+    }
+
+    private bool ConsumeSuppressedClick()
+    {
+        if (!_suppressNextClick) return false;
+        _suppressNextClick = false;
+        return true;
+    }
+
+    private static string GetIcon(MediaItem item) =>
+        item.IsDirectory ? "▰"
+        : MediaTypes.IsVideo(item) ? "▶"
+        : MediaTypes.IsSubtitle(item) ? "CC"
+        : "•";
+
+    private static string GetDetail(MediaItem item) =>
+        item.IsDirectory ? "Folder"
+        : MediaTypes.IsVideo(item) ? $"{item.Extension.TrimStart('.').ToUpperInvariant()} video"
+        : MediaTypes.IsSubtitle(item) ? $"{item.Extension.TrimStart('.').ToUpperInvariant()} subtitles"
+        : item.Extension.TrimStart('.').ToUpperInvariant();
+}

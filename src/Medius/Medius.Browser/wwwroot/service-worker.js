@@ -1,12 +1,13 @@
-const SHELL_CACHE = "medius-shell-v1";
+const SHELL_CACHE = "medius-shell-v2";
 const MEDIA_CACHE = "medius-media-v1";
 const OFFLINE_PREFIX = "/__medius_offline/";
 const SHELL_FILES = [
     "./",
     "./index.html",
     "./app.css",
-    "./main.js",
+    "./medius.css",
     "./player.js",
+    "./_framework/blazor.webassembly.js",
     "./manifest.webmanifest",
     "./ffmpeg/worker.js",
     "./ffmpeg/ffmpeg-core.js",

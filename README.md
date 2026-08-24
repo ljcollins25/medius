@@ -1,6 +1,6 @@
 # Medius
 
-Medius is a C# file browser and local-first media player. The UI is shared Avalonia code; the browser head uses an HTML5 `<video>` element for native browser playback and ffmpeg.wasm when a container or codec needs conversion.
+Medius is a C# file browser and local-first media player. The browser UI is a Blazor WebAssembly app with native HTML/CSS; the HTML5 `<video>` element handles native browser playback and ffmpeg.wasm when a container or codec needs conversion.
 
 ## Features
 
@@ -17,14 +17,14 @@ Medius is a C# file browser and local-first media player. The UI is shared Avalo
 - Subtitle appearance controls for font size and background opacity
 - Optional Nexis-compatible Azure ghost hydration
 - Multiple named provider mounts shown at the explorer root
-- Browser Cache Storage and desktop local-disk original-file offline media
+- Browser Cache Storage for original-file offline media
 - Configurable browser cache for converted fragments, with selectable original/1080p/720p/480p output
 - Installable/offline-capable browser shell with service-worker caching and Range responses
 - Custom playlists with optional start/end ranges and keep-offline pinning
 - Automatic History playlist with per-item removal and clearing
 - Encrypted app-state synchronization through a designated Azure Blob mount
 - Encrypted app-state file export/import and password-equivalent QR transfer from a camera or image
-- Browser `localStorage` and desktop local-disk app-state persistence
+- Browser `localStorage` app-state persistence
 
 ## Run
 
@@ -40,9 +40,9 @@ The generated ffmpeg bundle and single-threaded core are served locally from `ww
 
 Starting another video immediately pauses and clears the current player, cancels its ffmpeg worker, and displays a loading overlay while the replacement video hydrates or converts.
 
-The browser UI is mobile-first: narrow screens keep the library full-height with a collapsible video preview at the bottom, while wider screens keep the library and player side-by-side. Starting playback expands the preview automatically. Click a media-type icon once to open/play/apply it, or double-click the rest of the row. Use the large row ellipsis, desktop right-click, or mobile press-and-hold for playlist and offline actions. Subtitle controls are kept in a collapsible menu.
+The browser UI is mobile-first: narrow screens keep the library full-height with a collapsible video preview at the bottom, while wider screens keep the library and player side-by-side. Starting playback expands the preview automatically. Click a media-type icon once to open/play/apply it, or double-click the rest of the row. Use the large row ellipsis, desktop right-click, or mobile press-and-hold for playlist and offline actions. Subtitle controls are kept in a collapsible menu. Native HTML inputs are used throughout, so Android keyboard and touch interactions work without a custom text modal.
 
-`wwwroot/harness.html` runs the player against local files in `wwwroot/testmedia/` without the Avalonia app or cloud storage, which is the quickest way to debug playback and seeking:
+`wwwroot/harness.html` runs the player against local files in `wwwroot/testmedia/` without the Blazor app or cloud storage, which is the quickest way to debug playback and seeking:
 
 ```powershell
 Set-Location src\Medius\Medius.Browser
@@ -50,7 +50,7 @@ npm run build
 python -m http.server 8090 --directory wwwroot
 ```
 
-Use **••• → Add storage mount** to attach a provider. Each mount requires a unique display name and appears as a folder at the explorer root. Browser state is stored under `medius.mounts.v1` in that origin's `localStorage`; desktop state is stored in `%LOCALAPPDATA%\Medius\mounts.json`. These local records include credentials, so use a trusted local browser profile or OS account.
+Use **••• → Add storage mount** to attach a provider. Each mount requires a unique display name and appears as a folder at the explorer root. Browser state is stored under `medius.mounts.v1` in that origin's `localStorage`.
 
 ## Offline media and playlists
 
@@ -67,7 +67,7 @@ The browser requests persistent Cache Storage, and a service worker caches the a
 
 ## Encrypted app-data sync
 
-Choose **••• → App data sync** to designate an Azure Blob or OneDrive mount and path for synchronized state (the default is `.medius-app-state.json.enc` at the mount root). Mounts, encrypted credentials, playlists, history, and offline intent are serialized into an AES-256-GCM envelope derived from a user passphrase with PBKDF2-SHA256. Browser encryption uses Web Crypto; desktop uses .NET cryptography, and the envelope formats are compatible.
+Choose **Menu → App data sync** to designate an Azure Blob or OneDrive mount and path for synchronized state (the default is `.medius-app-state.json.enc` at the mount root). Mounts, encrypted credentials, playlists, history, and offline intent are serialized into an AES-256-GCM envelope derived from a user passphrase with PBKDF2-SHA256 through Web Crypto.
 
 The passphrase is never persisted. The designated bootstrap mount's own credential also stays local because it is required to retrieve the encrypted document; all other mount credentials are included only inside the encrypted envelope.
 
@@ -113,8 +113,7 @@ Remove-Item Env:\MEDIUS_TEST_AZURE_BLOB_SAS
 |---|---|
 | `Medius.Core` | Provider contracts, media planning, subtitle discovery/conversion |
 | `Medius.Providers.Azure` | Azure Blob, Azure Files, OneDrive, ghost hydration |
-| `Medius` | Shared Avalonia UI and view model |
-| `Medius.Browser` | WebAssembly head, HTML5 player, ffmpeg.wasm, OAuth PKCE |
-| `Medius.Desktop` | Native test shell for the shared Avalonia UI |
+| `Medius` | Shared view model and services (CommunityToolkit.Mvvm) |
+| `Medius.Browser` | Blazor WebAssembly host, HTML5 player, ffmpeg.wasm, OAuth PKCE |
 
-The browser head is the playback reference implementation. The desktop head intentionally does not replace the browser media engine; a production desktop wrapper should host the published browser app in WebView2 so playback behavior remains identical.
+The browser head is the playback reference implementation.
