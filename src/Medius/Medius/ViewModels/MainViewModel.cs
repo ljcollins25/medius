@@ -692,6 +692,41 @@ public partial class MainViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private async Task DownloadSelectedAsync()
+    {
+        if (SelectedItem is null || SelectedItem.IsDirectory)
+        {
+            Status = "Select a file first.";
+            return;
+        }
+
+        await RunUiOperationAsync(async () =>
+        {
+            var selected = SelectedItem ?? throw new InvalidOperationException("Select a file first.");
+            var mountId = GetItemMountId(selected);
+            var mount = Mounts.FirstOrDefault(item => item.Id == mountId)
+                ?? throw new InvalidOperationException("The selected file mount is unavailable.");
+            var provider = _activeMount?.Id == mount.Id && _provider is not null
+                ? _provider
+                : CreateProvider(mount);
+            var offlineUri = await PlatformServices.Offline.ResolveAsync(GetOfflineKey(mount.Id, selected.Path));
+            var providerItem = selected.Metadata?.ContainsKey(EntryKindKey) == true && offlineUri is null
+                ? await ResolveProviderItemAsync(provider, selected.Path)
+                : selected;
+            var content = offlineUri is null
+                ? await provider.GetContentAsync(providerItem)
+                : new MediaContent(offlineUri, providerItem.ContentType, providerItem.Size);
+            var bearerToken = offlineUri is null
+                && mount.ProviderKind.StartsWith("Azure", StringComparison.Ordinal)
+                && LooksLikeAccessToken(mount.Credential)
+                    ? mount.Credential
+                    : null;
+            await PlatformServices.Downloads.DownloadAsync(content.Uri, providerItem.Name, bearerToken);
+            Status = $"Download started for {providerItem.Name}.";
+        });
+    }
+
+    [RelayCommand]
     private async Task QueueSelectedForConversionAsync()
     {
         if (SelectedItem is null || !MediaTypes.IsVideo(SelectedItem))

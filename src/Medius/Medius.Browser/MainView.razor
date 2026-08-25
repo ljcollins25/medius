@@ -319,6 +319,10 @@
             <button @onclick="() => ContextAction(VM.OpenCommand)">
                 @(_contextItem.IsDirectory ? "Open" : MediaTypes.IsVideo(_contextItem) ? "Play" : "Apply")
             </button>
+            @if (!_contextItem.IsDirectory)
+            {
+                <button @onclick="() => ContextAction(VM.DownloadSelectedCommand)">Download</button>
+            }
             @if (MediaTypes.IsVideo(_contextItem))
             {
                 <button @onclick="() => ContextAction(VM.AddSelectedToPlaylistCommand)">Add to selected playlist</button>

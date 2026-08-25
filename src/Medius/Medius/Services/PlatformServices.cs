@@ -8,6 +8,8 @@ public static class PlatformServices
 
     public static IBackgroundConversionHost BackgroundConversion { get; set; } = new UnsupportedBackgroundConversionHost();
 
+    public static IFileDownloadHost Downloads { get; set; } = new UnsupportedFileDownloadHost();
+
     public static IWebAuthenticationHost Authentication { get; set; } = new UnsupportedAuthenticationHost();
 
     public static IMountStore Mounts { get; set; } = new MemoryMountStore();
@@ -64,6 +66,15 @@ public interface IBackgroundConversionHost
     Task CancelConversionAsync(string jobId);
 
     Task ClearCompletedConversionsAsync();
+}
+
+public interface IFileDownloadHost
+{
+    Task DownloadAsync(
+        Uri uri,
+        string fileName,
+        string? bearerToken = null,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record LocalSubtitle(string Name, string Content);
@@ -177,6 +188,16 @@ internal sealed class UnsupportedBackgroundConversionHost : IBackgroundConversio
 
     public Task ClearCompletedConversionsAsync() =>
         throw new PlatformNotSupportedException("Background conversion is available in the browser head.");
+}
+
+internal sealed class UnsupportedFileDownloadHost : IFileDownloadHost
+{
+    public Task DownloadAsync(
+        Uri uri,
+        string fileName,
+        string? bearerToken = null,
+        CancellationToken cancellationToken = default) =>
+        throw new PlatformNotSupportedException("File downloads are available in the browser head.");
 }
 
 internal sealed class UnsupportedAuthenticationHost : IWebAuthenticationHost

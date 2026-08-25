@@ -12,6 +12,7 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 await JSHost.ImportAsync("medius-player", "../player.js?v=7");
 PlatformServices.Playback = new BrowserPlaybackHost();
 PlatformServices.BackgroundConversion = new BrowserBackgroundConversionHost();
+PlatformServices.Downloads = new BrowserFileDownloadHost();
 PlatformServices.Authentication = new BrowserAuthenticationHost();
 PlatformServices.Mounts = new BrowserMountStore();
 PlatformServices.Offline = new BrowserOfflineMediaStore();

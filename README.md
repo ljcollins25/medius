@@ -17,6 +17,7 @@ Medius is a C# file browser and local-first media player. The browser UI is a Bl
 - Subtitle appearance controls for font size and background opacity
 - Optional Nexis-compatible Azure ghost hydration
 - Multiple named provider mounts shown at the explorer root
+- Native browser downloads for cloud and offline files
 - Browser Cache Storage for original-file offline media
 - Configurable browser cache for converted fragments, with selectable original/1080p/720p/480p output
 - Installable/offline-capable browser shell with service-worker caching and Range responses
@@ -53,6 +54,8 @@ python -m http.server 8090 --directory wwwroot
 ```
 
 Use **••• → Add storage mount** to attach a provider. Each mount requires a unique display name and appears as a folder at the explorer root. Browser state is stored under `medius.mounts.v1` in that origin's `localStorage`.
+
+Use a file's **••• → Download** action to save it through the browser download manager. Medius stages large cross-origin files in browser-managed private storage rather than holding the complete file in JavaScript memory, and includes Azure OAuth headers when required.
 
 ## Offline media and playlists
 

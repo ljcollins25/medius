@@ -112,6 +112,24 @@ internal sealed partial class BrowserPlaybackHost : IPlaybackHost
 }
 
 [SupportedOSPlatform("browser")]
+internal sealed partial class BrowserFileDownloadHost : IFileDownloadHost
+{
+    public async Task DownloadAsync(
+        Uri uri,
+        string fileName,
+        string? bearerToken = null,
+        CancellationToken cancellationToken = default) =>
+        _ = await DownloadFileAsync(uri.ToString(), fileName, bearerToken);
+
+    [JSImport("downloadFile", "medius-player")]
+    [return: JSMarshalAs<JSType.Promise<JSType.Boolean>>]
+    private static partial Task<bool> DownloadFileAsync(
+        string uri,
+        string fileName,
+        string? bearerToken);
+}
+
+[SupportedOSPlatform("browser")]
 public sealed partial class BrowserBackgroundConversionHost : IBackgroundConversionHost
 {
     private static readonly ConcurrentDictionary<string, UriResolverRegistration> UriResolvers = new();

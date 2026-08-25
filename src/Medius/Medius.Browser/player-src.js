@@ -23,6 +23,7 @@ const remoteProgressSinks = new Map();
 const ffmpegLog = [];
 const bgFfmpegLog = [];
 const conversionQueue = [];
+const stagedDownloadCleanups = new Set();
 
 const video = () => document.getElementById("media-player");
 const status = () => document.getElementById("player-status");
@@ -41,6 +42,12 @@ const PREFETCH_SEGMENTS = 6;
 const MAX_BUFFER_AHEAD_SECONDS = SEGMENT_SECONDS * PREFETCH_SEGMENTS;
 const KEEP_BEHIND_SECONDS = 30;
 const RANGE_LOG_PREFIX = "[medius-range]";
+const STAGED_DOWNLOAD_PREFIX = "medius-download-";
+const STAGED_DOWNLOAD_MAX_AGE_MS = 60 * 60 * 1000;
+
+window.addEventListener("pagehide", () => {
+    for (const cleanup of [...stagedDownloadCleanups]) void cleanup();
+});
 
 export function loadMounts() {
     return localStorage.getItem(mountsKey);
@@ -405,6 +412,75 @@ export function exportAppDataFile(fileName, content) {
     anchor.download = fileName;
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function downloadFile(uri, fileName, bearerToken) {
+    const response = await fetch(uri, bearerToken
+        ? {
+            headers: {
+                Authorization: `Bearer ${bearerToken}`,
+                "x-ms-version": "2023-11-03"
+            }
+        }
+        : undefined);
+    if (!response.ok) throw new Error(`Download failed (HTTP ${response.status}).`);
+    const staged = await stageBrowserDownload(response);
+    const objectUrl = URL.createObjectURL(staged.file);
+    triggerBrowserDownload(objectUrl, fileName);
+    setTimeout(async () => {
+        URL.revokeObjectURL(objectUrl);
+        await staged.cleanup?.();
+    }, 300000);
+    return true;
+}
+
+async function stageBrowserDownload(response) {
+    if (response.body && navigator.storage?.getDirectory) {
+        const root = await navigator.storage.getDirectory();
+        await cleanupStaleBrowserDownloads(root);
+        const temporaryName = `${STAGED_DOWNLOAD_PREFIX}${Date.now()}-${crypto.randomUUID()}`;
+        const handle = await root.getFileHandle(temporaryName, { create: true });
+        try {
+            const writable = await handle.createWritable();
+            await response.body.pipeTo(writable);
+            const cleanup = async () => {
+                stagedDownloadCleanups.delete(cleanup);
+                await root.removeEntry(temporaryName).catch(() => {});
+            };
+            stagedDownloadCleanups.add(cleanup);
+            return {
+                file: await handle.getFile(),
+                cleanup
+            };
+        } catch (error) {
+            await root.removeEntry(temporaryName).catch(() => {});
+            throw error;
+        }
+    }
+    return { file: await response.blob(), cleanup: null };
+}
+
+async function cleanupStaleBrowserDownloads(root) {
+    const cutoff = Date.now() - STAGED_DOWNLOAD_MAX_AGE_MS;
+    for await (const [name, handle] of root.entries()) {
+        if (!name.startsWith(STAGED_DOWNLOAD_PREFIX) || handle.kind !== "file") continue;
+        try {
+            const file = await handle.getFile();
+            if (file.lastModified < cutoff) await root.removeEntry(name);
+        } catch {
+            await root.removeEntry(name).catch(() => {});
+        }
+    }
+}
+
+function triggerBrowserDownload(uri, fileName) {
+    const anchor = document.createElement("a");
+    anchor.href = uri;
+    anchor.download = fileName;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    setTimeout(() => anchor.remove(), 0);
 }
 
 export function importAppDataFile() {
